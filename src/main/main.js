@@ -78,6 +78,14 @@ function samePath(a, b) {
   return process.platform === 'win32' ? n(a).toLowerCase() === n(b).toLowerCase() : n(a) === n(b);
 }
 
+// Title-bar button colors and window background per theme (the renderer sends 'dark' | 'light' | 'rainbow').
+const OVERLAY = {
+  dark: { color: '#2B2D30', symbolColor: '#DFE1E5' },
+  light: { color: '#F7F8FA', symbolColor: '#1E1F22' },
+  rainbow: { color: '#211E2C', symbolColor: '#E4E0F2' },
+};
+const WINDOW_BG = { dark: '#1E1F22', light: '#FFFFFF', rainbow: '#17151F' };
+
 function createWindow(project, goto) {
   const state = settings.get('window') || {};
   const win = new BrowserWindow({
@@ -88,13 +96,11 @@ function createWindow(project, goto) {
     minWidth: 800,
     minHeight: 500,
     show: false,
-    backgroundColor: settings.get('lastTheme') === 'light' ? '#FFFFFF' : '#1E1F22',
+    backgroundColor: WINDOW_BG[settings.get('lastTheme')] || WINDOW_BG.dark,
     title: 'PAPyrus',
     icon: path.join(__dirname, '../../build/icon.png'),
     titleBarStyle: 'hidden',
-    titleBarOverlay: process.platform === 'darwin' ? true : (settings.get('lastTheme') === 'light'
-      ? { color: '#F7F8FA', symbolColor: '#1E1F22', height: 40 }
-      : { color: '#2B2D30', symbolColor: '#DFE1E5', height: 40 }),
+    titleBarOverlay: process.platform === 'darwin' ? true : { ...(OVERLAY[settings.get('lastTheme')] || OVERLAY.dark), height: 40 },
     webPreferences: {
       preload: path.join(__dirname, '../preload/preload.js'),
       contextIsolation: true,
@@ -274,7 +280,6 @@ ipcMain.handle('app:setSettings', (e, patch) => {
 
 ipcMain.handle('app:settingsPath', () => settings.file);
 
-const OVERLAY = { dark: { color: '#2B2D30', symbolColor: '#DFE1E5' }, light: { color: '#F7F8FA', symbolColor: '#1E1F22' } };
 ipcMain.handle('app:setTheme', (e, { effective, source }) => {
   nativeTheme.themeSource = ['dark', 'light', 'system'].includes(source) ? source : 'dark';
   const s = sessionFor(e.sender);
@@ -282,7 +287,7 @@ ipcMain.handle('app:setTheme', (e, { effective, source }) => {
   if (s && process.platform !== 'darwin') {
     try { s.win.setTitleBarOverlay({ ...o, height: 40 }); } catch { /* not supported */ }
   }
-  if (s) s.win.setBackgroundColor(effective === 'light' ? '#FFFFFF' : '#1E1F22');
+  if (s) s.win.setBackgroundColor(WINDOW_BG[effective] || WINDOW_BG.dark);
   settings.set('lastTheme', effective);
 });
 ipcMain.handle('app:reloadSettings', () => { settings.reload(); return settings.all(); });

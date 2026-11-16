@@ -5,7 +5,7 @@ import { eventToKey, displayKey, normalizeKey } from './keybindings.js';
 export const SCHEMA = [
   {
     id: 'appearance', title: '모양', icon: 'symbol-color', items: [
-      { key: 'workbench.theme', label: '색 테마', type: 'select', options: [['dark', '어두운 테마'], ['light', '밝은 테마'], ['system', '시스템 설정 따르기']] },
+      { key: 'workbench.theme', label: '색 테마', type: 'select', options: [['dark', '어두운 테마'], ['light', '밝은 테마'], ['rainbow', '무지개 테마'], ['system', '시스템 설정 따르기']] },
       { key: 'editor.fontFamily', label: '에디터 글꼴', type: 'text', desc: "쉼표로 여러 개 지정할 수 있어요. 기본: 'JetBrains Mono', Consolas, monospace" },
       { key: 'editor.fontSize', label: '글자 크기', type: 'number', min: 8, max: 40 },
       { key: 'editor.lineHeight', label: '줄 간격 (글자 크기의 배수)', type: 'number', min: 1, max: 2.5, step: 0.05 },
@@ -24,6 +24,7 @@ export const SCHEMA = [
       { key: 'editor.wordWrap', label: '자동 줄 바꿈', type: 'bool' },
       { key: 'editor.formatOnSave', label: '저장할 때 서식 적용 (C#)', type: 'bool' },
       { key: 'editor.formatOnType', label: '입력하면서 서식 적용', type: 'bool', desc: '; 나 } 를 입력하면 해당 줄을 정리해요.' },
+      { key: 'editor.learnedCompletions', label: '학습형 자동완성', type: 'bool', desc: '직접 쓴 줄과 열린 파일에서 반복되는 줄을 기억해서 제안하고, Unity 스니펫(sf, awake, dlog…)도 보여 줘요.' },
     ],
   },
   {

@@ -16,6 +16,7 @@ const defaults = {
   'editor.renderWhitespace': 'none',
   'editor.stickyScroll': true,
   'editor.formatOnType': true,
+  'editor.learnedCompletions': true,
   'editor.codeLens': true,
   'editor.fontSize': 13,
   'editor.fontFamily': "'JetBrains Mono', Consolas, monospace",

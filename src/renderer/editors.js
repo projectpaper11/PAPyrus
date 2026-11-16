@@ -34,7 +34,7 @@ export class Editors {
     const s = this.app.settings;
     this.editor = monaco.editor.create(this.host, {
       model: null,
-      theme: this.app.effectiveTheme() === 'light' ? 'papyrus-light' : 'papyrus-dark',
+      theme: this.app.monacoTheme(),
       automaticLayout: true,
       fontFamily: s['editor.fontFamily'],
       fontSize: s['editor.fontSize'],
@@ -80,7 +80,7 @@ export class Editors {
       autoClosingBrackets: 'languageDefined',
       autoClosingQuotes: 'languageDefined',
       autoSurround: 'languageDefined',
-      bracketPairColorization: { enabled: false },
+      bracketPairColorization: { enabled: s['workbench.theme'] === 'rainbow' },
       guides: { indentation: true, bracketPairs: false, highlightActiveIndentation: true },
       stickyScroll: { enabled: s['editor.stickyScroll'] !== false, maxLineCount: 4 },
       glyphMargin: false,
@@ -103,6 +103,12 @@ export class Editors {
       'workbench.colorTheme': undefined,
     });
 
+    // Monaco measures glyph widths once. JetBrains Mono is a web font that loads lazily, so the
+    // first measurement can use the fallback font (Consolas, narrower) and the caret/selection
+    // drift into the middle of the text. Re-measure once the editor fonts have actually loaded.
+    this.remeasureFonts(s);
+    document.fonts.addEventListener('loadingdone', () => monaco.editor.remeasureFonts());
+
     this.editor.onDidChangeCursorPosition((e) => this.app.onCursor(e.position));
     this.editor.onDidChangeModelLanguageConfiguration(() => this.app.updateStatus());
 
@@ -123,6 +129,15 @@ export class Editors {
     });
   }
 
+  async remeasureFonts(s) {
+    const font = `${s['editor.fontSize']}px ${s['editor.fontFamily']}`;
+    try {
+      await Promise.all([font, `italic ${font}`, `bold ${font}`].map((f) => document.fonts.load(f)));
+      await document.fonts.ready;
+    } catch { /* bad font string: Monaco keeps its fallback measurement */ }
+    monaco.editor.remeasureFonts();
+  }
+
   applySettings(s) {
     for (const t of this.tabs) if (t.model) t.model.updateOptions({ tabSize: s['editor.tabSize'], insertSpaces: s['editor.insertSpaces'] });
     this.editor.updateOptions({
@@ -139,7 +154,9 @@ export class Editors {
       wordWrap: s['editor.wordWrap'] ? 'on' : 'off',
       inlayHints: { enabled: s['editor.inlayHints'] ? 'on' : 'off' },
       codeLens: s['editor.codeLens'] !== false,
+      bracketPairColorization: { enabled: s['workbench.theme'] === 'rainbow' },
     });
+    this.remeasureFonts(s);
   }
 
   // ------------------------------------------------------------------ open

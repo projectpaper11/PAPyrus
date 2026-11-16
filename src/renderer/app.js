@@ -20,6 +20,7 @@ import { Keybindings, displayKey } from './keybindings.js';
 import { SettingsView } from './settings-view.js';
 import { Updates } from './updates.js';
 import { SetupWizard } from './setup-wizard.js';
+import { CodeMemory } from './code-memory.js';
 import { el, icon, basename, dirname, relPath, joinPath, contextMenu, toast, debounce, samePath, extname } from './ui.js';
 
 const O = window.papyrus;
@@ -64,6 +65,11 @@ class App {
     });
     this.lsp.codeLensEnabled = this.settings['editor.codeLens'] !== false;
     this.editors = new Editors(this);
+    this.codeMemory = new CodeMemory({
+      enabled: () => this.settings['editor.learnedCompletions'] !== false,
+      lspCovers: (model) => model.getLanguageId() === 'csharp' && this.lspState === 'ready',
+    });
+    this.codeMemory.attach(this.editors.editor);
     this.lsp.ensureModelHook = (uris) => this.editors.ensureModels(uris);
     this.lsp.isEditableModel = (m) => this.editors.tabs.some((t) => t.model === m);
     this.logoUrl = logoUrl;
@@ -265,6 +271,10 @@ class App {
   }
 
   async openProject(path, goto) {
+    // Picking the Assets folder by mistake: open the Unity project root instead.
+    if (/^assets$/i.test(basename(path)) && (await O.fs.exists(joinPath(dirname(path), 'ProjectSettings')))) {
+      path = dirname(path);
+    }
     if (this.project && !samePath(path, this.project)) {
       if (!(await this.editors.closeAll())) return;
     }
@@ -555,6 +565,7 @@ class App {
   }
 
   onLspStatus(st) {
+    this.lspState = st.state;
     const sb = document.getElementById('sb-lsp');
     const labels = {
       starting: ['loading', 'C# 시작 중', 'spin'],
@@ -1023,6 +1034,10 @@ class App {
     G('papyrus.zoomOut', '글자 작게', 'Ctrl+-', () => this.zoom(-1), { icon: 'zoom-out', ...cat });
     G('papyrus.zoomReset', '글자 크기 초기화', 'Ctrl+0', () => this.zoom(0), { icon: 'screen-normal', ...cat });
     G('papyrus.toggleTheme', '밝은/어두운 테마 전환', 'Ctrl+K Ctrl+T', () => this.setSetting('workbench.theme', this.effectiveTheme() === 'dark' ? 'light' : 'dark'), { icon: 'color-mode', ...cat });
+    G('papyrus.clearCodeMemory', '학습한 자동완성 기록 지우기', [], () => {
+      this.codeMemory.clear();
+      toast({ title: '자동완성', message: '학습한 줄·단어·스니펫 사용 기록을 지웠어요.', timeout: 3000 });
+    }, { icon: 'clear-all', ...cat });
 
     // ---- Unity
     cat = { category: 'Unity' };
@@ -1085,14 +1100,24 @@ class App {
   effectiveTheme() {
     const t = this.settings['workbench.theme'] || 'dark';
     if (t === 'system') return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    return t === 'light' ? 'light' : 'dark';
+    return t === 'light' ? 'light' : 'dark'; // 'rainbow' is a dark theme
+  }
+
+  isRainbow() {
+    return this.settings['workbench.theme'] === 'rainbow';
+  }
+
+  monacoTheme() {
+    if (this.isRainbow()) return 'papyrus-rainbow';
+    return this.effectiveTheme() === 'light' ? 'papyrus-light' : 'papyrus-dark';
   }
 
   applyTheme() {
     const t = this.effectiveTheme();
     document.body.classList.toggle('light', t === 'light');
-    monaco.editor.setTheme(t === 'light' ? 'papyrus-light' : 'papyrus-dark');
-    O.app.setTheme(t, this.settings['workbench.theme'] || 'dark');
+    document.body.classList.toggle('rainbow', this.isRainbow());
+    monaco.editor.setTheme(this.monacoTheme());
+    O.app.setTheme(this.isRainbow() ? 'rainbow' : t, this.settings['workbench.theme'] || 'dark');
   }
 
   async setSetting(key, value) {
