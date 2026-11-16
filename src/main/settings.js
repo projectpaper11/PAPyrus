@@ -18,6 +18,7 @@ const defaults = {
   'editor.formatOnType': true,
   'editor.formatOnPaste': true, // pasted code is formatted (Roslyn): indentation, braces on their own line
   'editor.allmanBraces': true, // Enter after `{` moves it to its own line and opens the block, like Rider
+  'editor.removeUnusedUsings': 'auto', // 'auto' | 'onSave' | 'off': unused / unresolvable using directives are removed (Rider's optimize usings)
   'editor.learnedCompletions': true,
   'editor.codeLens': true,
   'editor.fontSize': 13,
@@ -31,6 +32,10 @@ const defaults = {
   'editor.formatOnSave': false,
   'unity.refreshOnSave': true,
   'unity.clearLogOnPlay': true,
+  'unity.assetLenses': true, // "used in 2 prefabs" lenses on scripts and UnityEvent methods
+  'unity.formerlySerializedAs': true, // renaming a serialized field adds [FormerlySerializedAs("old")]
+  'unity.stringChecks': true, // completion + typo warnings for tags, layers, scenes, animator parameters...
+  'unity.performanceHints': true, // GetComponent / Find ... in Update-like methods
   // "auto" = roslyn-language-server dotnet tool. Set a path to use another server (e.g. OmniSharp).
   'lsp.path': 'auto',
   'lsp.args': [],

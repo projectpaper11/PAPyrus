@@ -6,6 +6,7 @@ const fsp = fs.promises;
 const { LspServer } = require('./lsp');
 const { UnityBridge } = require('./unity');
 const files = require('./files');
+const unityAssets = require('./unity-assets');
 const settings = require('./settings');
 const { ensureUnityAnalyzers } = require('./analyzers');
 const updater = require('./updater');
@@ -245,6 +246,15 @@ ipcMain.handle('app:setProject', (e, project) => {
   return true;
 });
 
+// Cleaning up the recent projects list (right-click on a project): the renderer sends the new list.
+ipcMain.handle('app:setRecentProjects', (_e, list) => {
+  if (!Array.isArray(list)) return settings.get('recentProjects') || [];
+  const clean = [];
+  for (const p of list) if (typeof p === 'string' && p && !clean.some((q) => samePath(q, p))) clean.push(p);
+  settings.set('recentProjects', clean.slice(0, 12));
+  return settings.get('recentProjects');
+});
+
 ipcMain.handle('app:setTitle', (e, title) => {
   const s = sessionFor(e.sender);
   s.win.setTitle(title);
@@ -272,7 +282,7 @@ ipcMain.handle('app:reloadSettings', () => { settings.reload(); return settings.
 ipcMain.handle('app:toggleDevTools', (e) => e.sender.toggleDevTools());
 ipcMain.handle('app:openExternal', (_e, url) => shell.openExternal(url));
 ipcMain.handle('app:reveal', (_e, p) => shell.showItemInFolder(p));
-ipcMain.handle('app:newWindow', () => { createWindow(null, null); });
+ipcMain.handle('app:newWindow', (_e, project) => { createWindow(typeof project === 'string' && project ? project : null, null); });
 ipcMain.handle('app:confirm', async (e, opts) => {
   const s = sessionFor(e.sender);
   const r = await dialog.showMessageBox(s.win, {
@@ -288,6 +298,7 @@ ipcMain.handle('app:confirm', async (e, opts) => {
 
 // ---------------------------------------------------------------- IPC: files / setup
 files.register(ipcMain, sessionFor);
+unityAssets.register(ipcMain);
 setup.register(sessionFor);
 
 // ---------------------------------------------------------------- IPC: LSP

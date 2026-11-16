@@ -67,11 +67,19 @@ export async function showLocationPopup({ title, locations, at, project, current
       items.push({ file, line: r.start.line + 1, column: r.start.character + 1, text: text.trim().slice(0, 300), hl: [r.start.character - indent, r.start.character - indent + len] });
     }
   }
+  return showPopupItems({ title, items, at, project, onPick, onPanel });
+}
 
+/**
+ * The same popup for any rows: [{ file, line, column, text, hl?, label?, dir? }] (label replaces
+ * "file:line", dir the folder column). onPick(file, line, column, item).
+ */
+export function showPopupItems({ title, items, at, project, onPick, onPanel }) {
+  closeLocationPopup();
   let sel = 0;
   const rows = items.map((it, i) => {
     const code = el('span.lp-code');
-    const [a, b] = it.hl;
+    const [a, b] = it.hl || [-1, -1];
     if (a >= 0 && b <= it.text.length) code.append(it.text.slice(0, a), el('mark', null, it.text.slice(a, b)), it.text.slice(b));
     else code.append(it.text);
     return el('div.lp-row', {
@@ -79,9 +87,9 @@ export async function showLocationPopup({ title, locations, at, project, current
       onclick: () => pick(i),
     },
     fileIcon(basename(it.file)),
-    el('span.lp-file', null, `${basename(it.file)}:${it.line}`),
+    el('span.lp-file', null, it.label || `${basename(it.file)}:${it.line}`),
     code,
-    el('span.lp-dir', null, samePath(dirname(it.file), project) ? '' : relPath(project, dirname(it.file))));
+    el('span.lp-dir', null, it.dir != null ? it.dir : samePath(dirname(it.file), project) ? '' : relPath(project, dirname(it.file))));
   });
   const list = el('div.lp-list', { style: { maxHeight: `${MAX_ROWS_VISIBLE * ROW_H}px` } }, rows);
   const box = el('div.popup.loc-popup', { style: { width: `${Math.min(WIDTH, window.innerWidth - 24)}px` } },
@@ -107,7 +115,7 @@ export async function showLocationPopup({ title, locations, at, project, current
   function pick(i) {
     const it = items[i];
     close();
-    if (it) onPick(it.file, it.line, it.column);
+    if (it) onPick(it.file, it.line, it.column, it);
   }
   function onKey(e) {
     if (e.key === 'Escape') close();

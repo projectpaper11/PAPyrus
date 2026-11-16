@@ -67,7 +67,7 @@ export class Explorer {
     this.el.addEventListener('contextmenu', (e) => {
       if (e.target === this.el) {
         e.preventDefault();
-        this.menu(this.root, true, e.clientX, e.clientY);
+        this.menu(this.viewRoot || this.root, true, e.clientX, e.clientY);
       }
     });
 
@@ -79,9 +79,103 @@ export class Explorer {
       onkeydown: (e) => this.onSearchKey(e),
     });
     this.searchCount = el('span.ex-search-count');
+    // Pinned folders: tabs over the tree, each shows only its folder (like browser tabs)
+    this.pins = [];
+    this.viewRoot = null; // what the tree shows: the project, or the active pinned folder
+    this.pinsEl = el('div.ex-pins');
     this.view = el('div.explorer-view', null,
+      this.pinsEl,
       el('div.ex-search-wrap', null, el('div.ex-search', null, icon('search'), this.searchInput, this.searchCount)),
       this.el);
+  }
+
+  // ------------------------------------------------------------------ pinned folders (tabs)
+  isPinned(path) {
+    return this.pins.some((p) => samePath(p, path));
+  }
+
+  async pin(path) {
+    if (!this.isPinned(path)) {
+      this.pins.push(path);
+      this.app.sessionSet('explorerPins', this.pins);
+    }
+    await this.showPin(path);
+  }
+
+  async unpin(path) {
+    const i = this.pins.findIndex((p) => samePath(p, path));
+    if (i < 0) return;
+    this.pins.splice(i, 1);
+    this.app.sessionSet('explorerPins', this.pins);
+    if (samePath(this.viewRoot, path)) await this.showPin(this.pins[Math.min(i, this.pins.length - 1)] || null);
+    else this.renderPins();
+  }
+
+  /** Shows a pinned folder's contents only (null: the whole project). */
+  async showPin(path) {
+    this.viewRoot = path && this.isPinned(path) ? path : this.root;
+    this.expanded.add(this.viewRoot);
+    this.app.sessionSet('explorerPin', samePath(this.viewRoot, this.root) ? null : this.viewRoot);
+    this.renderPins();
+    await this.render();
+    this.onSearchInput();
+  }
+
+  renderPins() {
+    if (!this.pins.length) {
+      this.pinsEl.replaceChildren();
+      this.pinsEl.classList.remove('show');
+      return;
+    }
+    this.pinsEl.classList.add('show');
+    const tab = (path, label, iconName, closable) => el('div.ex-pin' + (samePath(this.viewRoot, path) ? '.active' : ''), {
+      title: closable ? `${relPath(this.root, path).replace(/\\/g, '/')}\n가운데 클릭: 고정 해제 · 끌어서 순서 바꾸기` : '프로젝트 전체',
+      draggable: closable ? 'true' : null,
+      onmousedown: (e) => {
+        if (e.button === 1 && closable) { e.preventDefault(); this.unpin(path); }
+        else if (e.button === 0 && !e.target.closest('.ex-pin-x')) this.showPin(closable ? path : null);
+      },
+      oncontextmenu: (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        contextMenu(e.clientX, e.clientY, closable ? [
+          { label: '고정 해제', icon: 'pinned', action: () => this.unpin(path) },
+          { label: '다른 고정 모두 해제', disabled: this.pins.length < 2, action: () => { this.pins = [path]; this.app.sessionSet('explorerPins', this.pins); this.showPin(path); } },
+          '-',
+          { label: '프로젝트 전체에서 보기', icon: 'target', action: () => this.showPin(null).then(() => this.reveal(path)) },
+          { label: '파일 탐색기에서 열기', icon: 'folder-opened', action: () => window.papyrus.app.reveal(path) },
+        ] : [
+          { label: '고정 모두 해제', icon: 'pinned', action: () => { this.pins = []; this.app.sessionSet('explorerPins', []); this.showPin(null); } },
+        ]);
+      },
+      ondragstart: (e) => { e.dataTransfer.setData('application/x-papyrus-pin', path); e.dataTransfer.effectAllowed = 'move'; },
+      ondragover: (e) => { if (closable && e.dataTransfer.types.includes('application/x-papyrus-pin')) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } },
+      ondrop: (e) => {
+        const from = e.dataTransfer.getData('application/x-papyrus-pin');
+        if (!from || !closable || samePath(from, path)) return;
+        e.preventDefault();
+        const list = this.pins.filter((p) => !samePath(p, from));
+        list.splice(list.findIndex((p) => samePath(p, path)), 0, from);
+        this.pins = list;
+        this.app.sessionSet('explorerPins', this.pins);
+        this.renderPins();
+      },
+    },
+    icon(iconName),
+    el('span.ex-pin-name', null, label),
+    closable ? el('span.ex-pin-x', { title: '고정 해제', onclick: (e) => { e.stopPropagation(); this.unpin(path); } }, icon('close')) : null);
+    this.pinsEl.replaceChildren(
+      tab(this.root, basename(this.root), 'root-folder', false),
+      ...this.pins.map((p) => tab(p, basename(p), 'folder', true)));
+    const act = this.pinsEl.querySelector('.ex-pin.active');
+    if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  /** The pinned folder showing `path` (deepest), else null. */
+  pinFor(path) {
+    const p = path.toLowerCase();
+    return this.pins.filter((d) => p.startsWith(d.toLowerCase() + '\\') || p.startsWith(d.toLowerCase() + '/'))
+      .sort((a, b) => b.length - a.length)[0] || null;
   }
 
   focusSearch() {
@@ -93,8 +187,10 @@ export class Explorer {
   fileMatches(q) {
     const lq = q.toLowerCase();
     const out = [];
+    const scope = this.viewRoot && !samePath(this.viewRoot, this.root) ? this.viewRoot.toLowerCase() + '\\' : null; // a pinned folder: only its scripts
     for (const p of this.app.fileIndex || []) {
       if (!/\.cs$/i.test(p)) continue;
+      if (scope && !p.toLowerCase().startsWith(scope)) continue;
       const name = basename(p).slice(0, -3);
       const i = name.toLowerCase().indexOf(lq);
       if (i < 0) continue;
@@ -141,7 +237,7 @@ export class Explorer {
           if (!TYPE_KINDS.includes(s.kind) || !s.name.toLowerCase().includes(lq) || !s.location) continue;
           const path = monaco.Uri.parse(s.location.uri).fsPath;
           if (!/\.cs$/i.test(path) || items.some((it) => samePath(it.path, path) && it.name === s.name)) continue;
-          if (this.root && !norm(path).startsWith(norm(this.root) + '/')) continue; // project files only
+          if (this.root && !norm(path).startsWith(norm(this.viewRoot || this.root) + '/')) continue; // project (or pinned folder) files only
           const r = s.location.range;
           items.push({ path, name: s.name, line: r ? r.start.line + 1 : undefined, column: r ? r.start.character + 1 : undefined });
         }
@@ -171,6 +267,14 @@ export class Explorer {
     const saved = this.app.sessionGet('expanded');
     if (Array.isArray(saved)) saved.forEach((p) => this.expanded.add(p));
     else this.expanded.add(joinPath(root, 'Assets'));
+    // pinned folders of this project (gone ones dropped)
+    const pins = this.app.sessionGet('explorerPins');
+    this.pins = [];
+    for (const p of Array.isArray(pins) ? pins : []) if (typeof p === 'string' && (await ofs.exists(p))) this.pins.push(p);
+    const pin = this.app.sessionGet('explorerPin');
+    this.viewRoot = pin && this.isPinned(pin) ? pin : root;
+    this.expanded.add(this.viewRoot);
+    this.renderPins();
     await this.render();
   }
 
@@ -186,6 +290,14 @@ export class Explorer {
       this.el.replaceChildren();
       return;
     }
+    // a pinned folder that was deleted / moved: back to the project
+    if (this.viewRoot && !samePath(this.viewRoot, this.root) && !(await ofs.exists(this.viewRoot))) {
+      this.pins = this.pins.filter((p) => !samePath(p, this.viewRoot));
+      this.app.sessionSet('explorerPins', this.pins);
+      this.viewRoot = this.root;
+      this.renderPins();
+    }
+    const top = this.viewRoot || this.root;
     const rows = [];
     const walk = async (dir, depth) => {
       const list = await this.load(dir);
@@ -194,8 +306,8 @@ export class Explorer {
         if (ent.dir && this.expanded.has(ent.path)) await walk(ent.path, depth + 1);
       }
     };
-    rows.push({ name: basename(this.root), path: this.root, dir: true, depth: 0, isRoot: true });
-    if (this.expanded.has(this.root)) await walk(this.root, 1);
+    rows.push({ name: basename(top), path: top, dir: true, depth: 0, isRoot: true, pinned: !samePath(top, this.root) });
+    if (this.expanded.has(top)) await walk(top, 1);
     this.rows = rows;
     const frag = document.createDocumentFragment();
     for (const r of rows) frag.append(this.row(r));
@@ -205,7 +317,8 @@ export class Explorer {
   row(r) {
     const open = r.dir && this.expanded.has(r.path);
     const isSel = this.selected && samePath(this.selected, r.path);
-    const dim = r.depth === 1 && !['Assets', 'Packages'].includes(r.name) && r.dir;
+    const inPin = this.viewRoot && !samePath(this.viewRoot, this.root);
+    const dim = !inPin && r.depth === 1 && !['Assets', 'Packages'].includes(r.name) && r.dir;
     const cut = this.clipboard && this.clipboard.cut && samePath(this.clipboard.path, r.path);
     const row = el('div.tree-row' + (isSel ? '.selected' : '') + (dim ? '.dim' : '') + (cut ? '.cut' : ''), {
       style: { paddingLeft: 6 + r.depth * 16 + 'px' },
@@ -245,7 +358,8 @@ export class Explorer {
     el('span.twisty', null, r.dir && !r.empty ? icon(open ? 'chevron-down' : 'chevron-right') : null),
     fileIcon(r.name, r.dir, open ? 'open' : ''),
     el('span.label', null, r.name),
-    r.isRoot ? el('span.hint', null, this.app.project ? relPath('', this.app.project).replace(/\\/g, '/') : '') : null);
+    r.isRoot ? el('span.hint', null, r.pinned ? relPath(this.root, r.path).replace(/\\/g, '/')
+      : this.app.project ? relPath('', this.app.project).replace(/\\/g, '/') : '') : null);
     return row;
   }
 
@@ -271,15 +385,24 @@ export class Explorer {
 
   async reveal(path) {
     if (!this.root) return;
+    // outside the pinned folder being shown: the pin that holds it, else the whole project
+    const top0 = this.viewRoot || this.root;
+    const inside = (d) => samePath(path, d) || path.toLowerCase().startsWith(d.toLowerCase() + '\\') || path.toLowerCase().startsWith(d.toLowerCase() + '/');
+    if (!inside(top0)) {
+      this.viewRoot = this.pinFor(path) || this.root;
+      this.app.sessionSet('explorerPin', samePath(this.viewRoot, this.root) ? null : this.viewRoot);
+      this.renderPins();
+    }
+    const top = this.viewRoot || this.root;
     let dir = dirname(path);
     const chain = [];
-    while (dir && dir.length >= this.root.length && !samePath(dir, this.root)) {
+    while (dir && dir.length >= top.length && !samePath(dir, top)) {
       chain.unshift(dir);
       const up = dirname(dir);
       if (up === dir) break;
       dir = up;
     }
-    this.expanded.add(this.root);
+    this.expanded.add(top);
     chain.forEach((d) => this.expanded.add(d));
     await this.render();
     this.select(path);
@@ -609,6 +732,9 @@ export class Explorer {
       { label: '이름 바꾸기…', icon: 'edit', key: 'F2', disabled: samePath(path, this.root), action: () => this.rename(path) },
       { label: '삭제', icon: 'trash', key: 'Delete', disabled: samePath(path, this.root), action: () => this.remove(path) },
       ...(isDir || ext === '.cs' ? [{ label: '네임스페이스를 폴더에 맞추기…', icon: 'symbol-namespace', action: () => this.adjustNamespaces(path, isDir) }] : []),
+      ...(isDir && !samePath(path, this.root) ? [this.isPinned(path)
+        ? { label: '고정 해제', icon: 'pinned', action: () => this.unpin(path) }
+        : { label: '탭으로 고정', icon: 'pin', action: () => this.pin(path) }] : []),
       '-',
       { label: '경로 복사', icon: 'link', action: () => navigator.clipboard.writeText(path) },
       { label: '파일 탐색기에서 열기', icon: 'folder-opened', action: () => window.papyrus.app.reveal(path) },
@@ -647,7 +773,7 @@ export class Explorer {
     toast({
       title: '네임스페이스도 옮길까요?',
       message: follow.length === 1 ? `${basename(follow[0])}의 네임스페이스가 예전 폴더 기준이에요.` : `스크립트 ${follow.length}개의 네임스페이스가 예전 폴더 기준이에요.`,
-      actions: [{ label: '폴더에 맞추기', action: () => this.app.refactor.adjustNamespaces(follow) }],
+      actions: [{ label: '폴더에 맞추기', action: () => this.app.refactor.adjustNamespaces(follow, { tickAll: true }) }],
       timeout: 12000,
     });
   }

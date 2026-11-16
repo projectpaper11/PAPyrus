@@ -17,6 +17,8 @@ export class LspClient {
     this.diagRegs = new Map(); // registration id -> identifier
     this.pullResults = new Map(); // uri -> Map(identifier -> {resultId, items})
     this.lastDiagnostics = new Map(); // uri -> lsp diagnostics (all identifiers merged)
+    this.diagVersion = new Map(); // uri -> document version the diagnostics are for
+    this.onDiagnostics = null; // (model, diagnostics) once they're shown (using cleanup)
     this.providers = [];
     this.lensKickedFor = null; // model whose lenses were last re-requested after being shown
     this.onStatus = onStatus;
@@ -72,7 +74,9 @@ export class LspClient {
         const d = this.docs.get(normUri(params.uri));
         this.lastDiagnostics.set(normUri(params.uri), params.diagnostics || []);
         const model = d ? d.model : monaco.editor.getModel(monaco.Uri.parse(params.uri));
+        this.diagVersion.set(normUri(params.uri), params.version != null ? params.version : d ? d.version : -1);
         if (model) monaco.editor.setModelMarkers(model, 'lsp', (params.diagnostics || []).filter(cv.visibleDiagnostic).map(cv.toMarker));
+        if (model && this.onDiagnostics) this.onDiagnostics(model, params.diagnostics || []);
         break;
       }
       case '$papyrus/registerCapability':
@@ -219,6 +223,21 @@ export class LspClient {
     this.pullAll();
   }
 
+  /** Diagnostics for the model's current text (not an older version still on the way)? */
+  diagnosticsFresh(model) {
+    const uri = normUri(model.uri.toString());
+    const d = this.docs.get(uri);
+    return !!d && this.diagVersion.get(uri) === d.version && this.lastDiagnostics.has(uri);
+  }
+
+  diagnosticsFor(model) {
+    return this.lastDiagnostics.get(normUri(model.uri.toString())) || [];
+  }
+
+  pullNow(model) {
+    this.schedulePull(normUri(model.uri.toString()), 0);
+  }
+
   // ------------------------------------------------------------------ pull diagnostics
   pullIdentifiers() {
     const ids = new Set(this.diagRegs.values());
@@ -259,7 +278,9 @@ export class LspClient {
     const all = [];
     for (const v of store.values()) all.push(...v.items);
     this.lastDiagnostics.set(uri, all);
+    this.diagVersion.set(uri, version);
     monaco.editor.setModelMarkers(cur.model, 'lsp', all.filter(cv.visibleDiagnostic).map(cv.toMarker));
+    if (this.onDiagnostics) this.onDiagnostics(cur.model, all);
   }
 
   // ------------------------------------------------------------------ providers
@@ -472,7 +493,10 @@ export class LspClient {
         async provideRenameEdits(model, position, newName, token) {
           const r = await self.request('textDocument/rename', { textDocument: doc(model), position: cv.toPos(position), newName }, token);
           if (!r) return { edits: [], rejectReason: '이름을 바꿀 수 없는 위치예요' };
-          return self.toMonacoEdit(r);
+          const res = self.toMonacoEdit(r);
+          // Unity: a renamed serialized field gets [FormerlySerializedAs] (unity-features.js)
+          if (self.onRename) { try { await self.onRename(model, position, newName, res); } catch { /* keep Roslyn's edit */ } }
+          return res;
         },
         resolveRenameLocation: prepare ? async (model, position, token) => {
           const r = await self.request('textDocument/prepareRename', { textDocument: doc(model), position: cv.toPos(position) }, token);

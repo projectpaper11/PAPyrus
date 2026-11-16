@@ -25,6 +25,8 @@ import { CodeMemory } from './code-memory.js';
 import './unity-completions.js';
 import { registerOverrideCompletion } from './override-completions.js';
 import { Refactorings } from './refactorings.js';
+import { UsingCleanup } from './using-cleanup.js';
+import { UnityFeatures } from './unity-features.js';
 import { showLocationPopup, popupPoint } from './location-popup.js';
 import { el, icon, basename, dirname, relPath, joinPath, contextMenu, toast, debounce, samePath, extname } from './ui.js';
 
@@ -75,12 +77,19 @@ class App {
       enabled: () => this.settings['editor.learnedCompletions'] !== false,
       lspCovers: (model) => model.getLanguageId() === 'csharp' && this.lspState === 'ready',
     });
-    this.codeMemory.attach(this.editors.editor);
     registerOverrideCompletion(this);
     this.refactor = new Refactorings(this);
-    this.attachRefactorMenu(this.editors.editor);
-    this.attachCtrlClickUsages(this.editors.editor);
+    // every split gets the same context menu / Ctrl+click / learned completions (also splits made later)
+    this.editors.forEachEditor((ed) => {
+      this.codeMemory.attach(ed);
+      this.attachRefactorMenu(ed);
+      this.attachCtrlClickUsages(ed);
+    });
     this.lsp.ensureModelHook = (uris) => this.editors.ensureModels(uris);
+    this.usingCleanup = new UsingCleanup(this);
+    this.lsp.onDiagnostics = (model, diags) => this.usingCleanup.onDiagnostics(model, diags);
+    this.unityFeatures = new UnityFeatures(this);
+    this.lsp.onRename = (model, position, newName, result) => this.unityFeatures.onRename(model, position, newName, result);
     this.lsp.isEditableModel = (m) => this.editors.tabs.some((t) => t.model === m);
     this.logoUrl = logoUrl;
     this.keys = new Keybindings(this);
@@ -263,12 +272,69 @@ class App {
     ]);
   }
 
-  projectMenu(anchor) {
+  async projectMenu(anchor) {
+    const recent = (this.recentProjects || []).slice(0, 10);
+    const missing = await this.missingProjects(recent);
     const items = [{ label: '폴더 열기…', icon: 'folder-opened', action: () => this.pickProject() }, '-'];
-    for (const p of (this.recentProjects || []).slice(0, 10)) {
-      items.push({ label: basename(p), icon: samePath(p, this.project) ? 'check' : 'folder', key: p.length > 50 ? '…' + p.slice(-48) : p, action: () => this.openProject(p) });
+    for (const p of recent) {
+      const gone = missing.has(p);
+      items.push({
+        label: basename(p),
+        icon: samePath(p, this.project) ? 'check' : gone ? 'warning' : 'folder',
+        key: gone ? '폴더 없음' : p.length > 50 ? '…' + p.slice(-48) : p,
+        dim: gone,
+        title: '우클릭: 목록에서 제거 · 정리',
+        action: () => (gone ? this.recentProjectMenu(p, anchor.getBoundingClientRect().left, anchor.getBoundingClientRect().bottom + 4) : this.openProject(p)),
+        onContext: (x, y) => this.recentProjectMenu(p, x, y),
+      });
     }
+    if (missing.size) items.push('-', { label: `없는 프로젝트 정리 (${missing.size})`, icon: 'clear-all', action: () => this.pruneRecentProjects() });
     this.menuAt(anchor, items);
+  }
+
+  /** Recent projects whose folder no longer exists (moved / deleted). */
+  async missingProjects(list) {
+    const gone = new Set();
+    await Promise.all(list.map(async (p) => { if (!(await O.fs.exists(p))) gone.add(p); }));
+    return gone;
+  }
+
+  /** Right-click on a recent project (title bar list or welcome screen). */
+  async recentProjectMenu(p, x, y) {
+    const current = samePath(p, this.project);
+    const gone = !(await O.fs.exists(p));
+    const others = (this.recentProjects || []).filter((q) => !samePath(q, this.project));
+    const missing = await this.missingProjects(this.recentProjects || []);
+    contextMenu(x, y, [
+      { label: current ? '현재 열린 프로젝트' : '열기', icon: 'folder-opened', disabled: current || gone, action: () => this.openProject(p) },
+      { label: '새 창에서 열기', icon: 'empty-window', disabled: current || gone, action: () => O.app.newWindow(p) },
+      { label: '파일 탐색기에서 보기', icon: 'folder', disabled: gone, action: () => O.app.reveal(p) },
+      { label: '경로 복사', icon: 'copy', action: () => navigator.clipboard.writeText(p) },
+      '-',
+      { label: '목록에서 제거', icon: 'close', key: current ? '열려 있음' : '', disabled: current, action: () => this.setRecentProjects((this.recentProjects || []).filter((q) => !samePath(q, p)), `'${basename(p)}'을(를) 목록에서 뺐어요.`) },
+      { label: `없는 프로젝트 정리${missing.size ? ` (${missing.size})` : ''}`, icon: 'clear-all', disabled: !missing.size, action: () => this.pruneRecentProjects() },
+      { label: '다른 프로젝트 모두 지우기', icon: 'trash', disabled: !others.length, action: () => this.clearOtherRecentProjects() },
+    ]);
+  }
+
+  async pruneRecentProjects() {
+    const missing = await this.missingProjects(this.recentProjects || []);
+    if (!missing.size) return;
+    await this.setRecentProjects((this.recentProjects || []).filter((p) => !missing.has(p)), `폴더가 없는 프로젝트 ${missing.size}개를 목록에서 뺐어요.`);
+  }
+
+  async clearOtherRecentProjects() {
+    const others = (this.recentProjects || []).filter((q) => !samePath(q, this.project));
+    const ok = await O.app.confirm({ message: '최근 프로젝트 목록을 비울까요?', detail: `${others.length}개를 목록에서 뺍니다. 프로젝트 폴더는 지우지 않아요.`, buttons: ['비우기', '취소'] });
+    if (ok !== 0 && ok !== true) return;
+    await this.setRecentProjects(this.project ? [this.project] : [], '최근 프로젝트 목록을 비웠어요.');
+  }
+
+  /** Saves the list (only the list: project folders on disk are never touched). */
+  async setRecentProjects(list, message) {
+    this.recentProjects = await O.app.setRecentProjects(list);
+    if (!this.project && document.getElementById('welcome').classList.contains('show')) this.showWelcome();
+    if (message) toast({ title: '최근 프로젝트', message, timeout: 2500 });
   }
 
   unityMenu(anchor) {
@@ -306,6 +372,7 @@ class App {
     this.project = path;
     this.recentProjects = [path, ...(this.recentProjects || []).filter((p) => !samePath(p, path))];
     this.isUnityProject = await O.fs.exists(joinPath(path, 'ProjectSettings'));
+    this.unityFeatures.onProjectOpened(); // assets + project settings, in the background
     this.session = this.loadSession();
     document.getElementById('proj-name').textContent = basename(path);
     document.getElementById('proj-badge').textContent = basename(path).replace(/[^A-Za-z0-9가-힣]/g, '').slice(0, 2).toUpperCase() || 'P';
@@ -331,15 +398,20 @@ class App {
       });
     }
 
-    // restore tabs
-    const tabs = this.sessionGet('tabs') || [];
-    for (const t of tabs) {
-      if (await O.fs.exists(t)) await this.editors.open(t, { focus: false, pushHistory: false });
-    }
-    const active = this.sessionGet('active');
-    if (active) {
-      const tab = this.editors.findTab(active);
-      if (tab) this.editors.activate(tab);
+    // restore tabs (and the splits they were in)
+    const layout = this.sessionGet('layout');
+    if (layout && Array.isArray(layout.groups)) {
+      await this.editors.restore(layout, (p) => O.fs.exists(p));
+    } else {
+      const tabs = this.sessionGet('tabs') || [];
+      for (const t of tabs) {
+        if (await O.fs.exists(t)) await this.editors.open(t, { focus: false, pushHistory: false });
+      }
+      const active = this.sessionGet('active');
+      if (active) {
+        const tab = this.editors.findTab(active);
+        if (tab) this.editors.activate(tab);
+      }
     }
     this.recentFiles = (this.sessionGet('recent') || []).filter(Boolean);
     const bottom = this.sessionGet('bottom');
@@ -395,6 +467,7 @@ class App {
     if (!this.project || !this.session) return;
     this.session.tabs = this.editors.tabs.filter((t) => !t.preview && !t.special).map((t) => t.path);
     this.session.active = this.editors.active && !this.editors.active.special ? this.editors.active.path : null;
+    this.session.layout = this.editors.serialize();
     this.session.recent = this.recentFiles.slice(0, 50);
     localStorage.setItem('session:' + this.project.toLowerCase(), JSON.stringify(this.session));
   }
@@ -419,9 +492,22 @@ class App {
       el('div.actions', null,
         el('button.btn.primary', { onclick: () => this.pickProject() }, icon('folder-opened'), '폴더 열기')),
       recent.length ? el('div.recent-title', null, '최근 프로젝트') : null,
-      el('div.recent', null, recent.map((p) => el('div.recent-item', { onclick: () => this.openProject(p) },
-        el('span.proj-badge', null, basename(p).slice(0, 2).toUpperCase()),
-        el('div', null, el('div.rn', null, basename(p)), el('div.rp', null, p)))))));
+      el('div.recent', null, recent.map((p) => el('div.recent-item', {
+        title: '우클릭: 목록에서 제거 · 정리',
+        onclick: (e) => (e.currentTarget.classList.contains('missing') ? this.recentProjectMenu(p, e.clientX, e.clientY) : this.openProject(p)),
+        oncontextmenu: (e) => { e.preventDefault(); this.recentProjectMenu(p, e.clientX, e.clientY); },
+        'data-path': p,
+      },
+      el('span.proj-badge', null, basename(p).slice(0, 2).toUpperCase()),
+      el('div', null, el('div.rn', null, basename(p)), el('div.rp', null, p)))))));
+    // folders that are gone: struck through (click/right-click offers the cleanup)
+    this.missingProjects(recent).then((gone) => {
+      for (const row of w.querySelectorAll('.recent-item')) {
+        if (!gone.has(row.dataset.path)) continue;
+        row.classList.add('missing');
+        row.querySelector('.rp').textContent = `${row.dataset.path} · 폴더 없음`;
+      }
+    });
   }
 
   showEmptyEditor() {
@@ -1150,6 +1236,11 @@ class App {
     E('papyrus.safeDelete', '안전 삭제', 'Alt+Delete', () => this.refactor.safeDelete(), cat);
     E('papyrus.extractInterface', '인터페이스 추출', null, () => this.refactor.extractInterface(), cat);
     E('papyrus.adjustNamespaces', '네임스페이스를 폴더에 맞추기', null, () => this.refactor.adjustCurrentNamespace(), cat);
+    E('papyrus.optimizeUsings', 'using 정리 (안 쓰는 using 지우기)', 'Ctrl+Alt+O', async () => {
+      const n = await this.usingCleanup.cleanNow(this.editors.editor.getModel());
+      if (n < 0) toast({ kind: 'warn', title: 'using 정리', message: 'C# 언어 서버가 아직 분석 중이에요. 잠시 뒤에 다시 해 보세요.', timeout: 3000 });
+      else toast({ title: 'using 정리', message: n ? `using ${n}개를 지웠어요.` : '지울 using이 없어요.', timeout: 2000 });
+    }, cat);
     E('papyrus.formatDocument', '문서 서식', 'Shift+Alt+F', () => this.editorAction('editor.action.formatDocument'), { monaco: 'editor.action.formatDocument', ...cat });
     M('editor.action.formatSelection', '선택 영역 서식', 'Ctrl+K Ctrl+F', cat);
     M('editor.action.commentLine', '줄 주석 토글', 'Ctrl+/', cat);
@@ -1182,7 +1273,7 @@ class App {
     M('editor.unfold', '펼치기', 'Ctrl+Shift+]', cat);
     G('papyrus.toggleWordWrap', '자동 줄 바꿈 전환', 'Alt+Z', () => {
       const cur = this.editors.editor.getOption(monaco.editor.EditorOption.wordWrap);
-      this.editors.editor.updateOptions({ wordWrap: cur === 'off' ? 'on' : 'off' });
+      this.editors.updateAllOptions({ wordWrap: cur === 'off' ? 'on' : 'off' });
     }, { icon: 'word-wrap', ...cat });
 
     // ---- 파일
@@ -1194,6 +1285,14 @@ class App {
     G('papyrus.reopenClosed', '닫은 탭 다시 열기', 'Ctrl+Shift+T', () => this.editors.reopenClosed(), { icon: 'history', ...cat });
     G('papyrus.nextTab', '다음 탭', ['Ctrl+Tab', 'Ctrl+PageDown'], () => this.editors.nextTab(1), { icon: 'arrow-right', ...cat });
     G('papyrus.prevTab', '이전 탭', ['Ctrl+Shift+Tab', 'Ctrl+PageUp'], () => this.editors.nextTab(-1), { icon: 'arrow-left', ...cat });
+    // splits (Rider: Split Vertically / Horizontally, up to 3 editors)
+    G('papyrus.splitRight', '오른쪽으로 분할', 'Ctrl+\\', () => this.editors.splitTab(this.editors.active, 'row'), { icon: 'split-horizontal', ...cat });
+    G('papyrus.splitDown', '아래로 분할', 'Ctrl+K Ctrl+\\', () => this.editors.splitTab(this.editors.active, 'column'), { icon: 'split-vertical', ...cat });
+    G('papyrus.moveToNextGroup', '탭을 다른 분할 창으로 이동', [], () => this.editors.active && this.editors.groups.length > 1 && this.editors.moveTab(this.editors.active, this.editors.nextGroup()), { icon: 'arrow-swap', ...cat });
+    G('papyrus.unsplit', '분할 해제 (모두 합치기)', [], () => this.editors.unsplit(), { icon: 'screen-normal', ...cat });
+    G('papyrus.focusGroup1', '첫 번째 분할 창으로', 'Ctrl+1', () => this.editors.focusNth(0), cat);
+    G('papyrus.focusGroup2', '두 번째 분할 창으로', 'Ctrl+2', () => this.editors.focusNth(1), cat);
+    G('papyrus.focusGroup3', '세 번째 분할 창으로', 'Ctrl+3', () => this.editors.focusNth(2), cat);
     G('papyrus.newScript', '새 C# 스크립트', 'Ctrl+N', () => this.newScriptHere(), { icon: 'new-file', ...cat });
     G('papyrus.openFolder', '폴더 열기', 'Ctrl+K Ctrl+O', () => this.pickProject(), { icon: 'folder-opened', ...cat });
     G('papyrus.newWindow', '새 창', 'Ctrl+Shift+N', () => O.app.newWindow(), { icon: 'empty-window', ...cat });
@@ -1266,7 +1365,7 @@ class App {
     const cur = this.editors.editor.getOption(monaco.editor.EditorOption.fontSize);
     const size = dir === 0 ? base : Math.max(8, Math.min(40, cur + dir));
     const lineHeight = Math.round(size * (this.settings['editor.lineHeight'] || 1.45));
-    this.editors.editor.updateOptions({ fontSize: size, lineHeight, suggestFontSize: size, suggestLineHeight: lineHeight });
+    this.editors.updateAllOptions({ fontSize: size, lineHeight, suggestFontSize: size, suggestLineHeight: lineHeight });
   }
 
   setupKeys() {
@@ -1326,6 +1425,7 @@ class App {
     this.applyTheme();
     this.editors.applySettings(s);
     this.lsp.codeLensEnabled = s['editor.codeLens'] !== false;
+    if (this.unityFeatures && ['unity.assetLenses', 'unity.stringChecks', 'unity.performanceHints'].some((k) => prev[k] !== s[k])) this.unityFeatures.settingsChanged();
     this.keys.setUserBindings(s.keybindings || {});
     if (JSON.stringify(prev['files.exclude']) !== JSON.stringify(s['files.exclude']) || prev['explorer.hideProjectFiles'] !== s['explorer.hideProjectFiles']) {
       this.explorer.refresh();
@@ -1357,6 +1457,7 @@ class App {
       this.explorer.refresh(paths);
       this.inspector.onFilesChanged(paths);
       this.editors.onExternalChange(paths);
+      this.unityFeatures.onFilesChanged(paths);
       // keep the file index fresh
       const added = [];
       for (const p of paths) {
