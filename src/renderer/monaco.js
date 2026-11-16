@@ -1,4 +1,7 @@
 // Monaco bootstrap: core contributions, a few Monarch grammars and the Rider-like theme.
+// Korean UI strings for Monaco's own menus/widgets (context menu, find, rename, peek...).
+// Must load before any Monaco module: it fills the message table they read on import.
+import 'monaco-editor/nls/lang/ko.js';
 import './generated/monaco-contribs.js';
 import * as monaco from 'monaco-editor/editor/editor.api.js';
 

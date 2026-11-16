@@ -1,9 +1,9 @@
 {
   "name": "com.papyrus.ide",
   "displayName": "PAPyrus Integration",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "unity": "2021.3",
-  "description": "PAPyrus를 External Script Editor로 등록합니다. SDK 스타일 .sln/.csproj 생성, 스크립트 더블클릭으로 열기, IDE에서 Unity 콘솔 로그 보기, Play/Stop/Pause, 에셋 새로고침을 지원합니다.",
+  "description": "Unity의 External Script Editor 목록에 PAPyrus를 등록합니다. SDK 스타일 .sln/.csproj 생성, 실시간 콘솔, Play 제어, 에셋 새로고침, 라이브 하이라키와 인스펙터를 지원하는 선택 패키지입니다.",
   "author": { "name": "PAPyrus" },
   "keywords": ["ide", "editor", "csharp", "unity"]
 }

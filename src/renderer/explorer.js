@@ -1,7 +1,13 @@
 // Explorer tool window: lazy file tree of the Unity project.
-import { el, icon, basename, dirname, joinPath, fileIcon, contextMenu, prompt, toast, samePath, relPath } from './ui.js';
+import { monaco } from './monaco.js';
+import { isInspectable } from './inspector.js';
+import { el, icon, basename, dirname, joinPath, fileIcon, contextMenu, prompt, toast, samePath, relPath, extname } from './ui.js';
 
 const ofs = window.papyrus.fs;
+const RENAME_CLASS_KEY = 'explorer.renameClassWithFile'; // "클래스 이름도 같이 바꾸기" checkbox state
+const COPY_CLASS_KEY = 'explorer.renameClassOnCopy'; // the same checkbox in the copy dialog (on by default)
+const SAFE_DELETE_KEY = 'explorer.safeDelete'; // "안전 삭제 (사용처 검색)" in the delete dialog (on by default)
+const TYPE_KINDS = [5, 10, 11, 23]; // LSP SymbolKind: class, enum, interface, struct
 
 const TEMPLATES = {
   mono: (n, ns) => wrapNs(ns, `public class ${n} : MonoBehaviour
@@ -63,6 +69,98 @@ export class Explorer {
         this.menu(this.root, true, e.clientX, e.clientY);
       }
     });
+
+    // Script search under the header: type a name, Enter opens the 1st match, Enter again the next.
+    this.search = { query: null, items: [], index: -1, seq: 0 };
+    this.searchInput = el('input', {
+      type: 'text', placeholder: '스크립트 이름으로 찾기 (Enter: 다음)', spellcheck: 'false',
+      oninput: () => this.onSearchInput(),
+      onkeydown: (e) => this.onSearchKey(e),
+    });
+    this.searchCount = el('span.ex-search-count');
+    this.view = el('div.explorer-view', null,
+      el('div.ex-search-wrap', null, el('div.ex-search', null, icon('search'), this.searchInput, this.searchCount)),
+      this.el);
+  }
+
+  focusSearch() {
+    this.searchInput.focus();
+    this.searchInput.select();
+  }
+
+  // .cs files whose name contains the query: exact name first, then prefix, then anywhere.
+  fileMatches(q) {
+    const lq = q.toLowerCase();
+    const out = [];
+    for (const p of this.app.fileIndex || []) {
+      if (!/\.cs$/i.test(p)) continue;
+      const name = basename(p).slice(0, -3);
+      const i = name.toLowerCase().indexOf(lq);
+      if (i < 0) continue;
+      const rank = name.length === lq.length ? 0 : i === 0 ? 1 : 2;
+      out.push({ path: p, name, rank });
+    }
+    return out.sort((a, b) => a.rank - b.rank || a.name.length - b.name.length || a.path.localeCompare(b.path));
+  }
+
+  onSearchInput() {
+    const q = this.searchInput.value.trim();
+    this.search.query = null; // next Enter starts again from the first match
+    this.searchCount.textContent = q ? `${this.fileMatches(q).length}개` : '';
+    this.searchCount.classList.toggle('none', !!q && this.searchCount.textContent === '0개');
+  }
+
+  async onSearchKey(e) {
+    if (e.key === 'Escape') {
+      this.searchInput.value = '';
+      this.onSearchInput();
+      this.app.editors.editor.focus();
+    } else if (e.key === 'Enter') {
+      await this.searchStep(e.shiftKey ? -1 : 1);
+    } else return;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  async searchStep(dir) {
+    const q = this.searchInput.value.trim();
+    if (!q) return;
+    const S = this.search;
+    if (S.query !== q) {
+      const seq = ++S.seq;
+      const items = this.fileMatches(q).map((f) => ({ path: f.path, name: f.name }));
+      // classes whose file is named differently (several types in one file, etc.)
+      const lsp = this.app.lsp;
+      if (lsp.running) {
+        const syms = await lsp.workspaceSymbols(q).catch(() => []);
+        if (seq !== S.seq) return;
+        const lq = q.toLowerCase();
+        const norm = (p) => p.replace(/\\/g, '/').toLowerCase();
+        for (const s of syms) {
+          if (!TYPE_KINDS.includes(s.kind) || !s.name.toLowerCase().includes(lq) || !s.location) continue;
+          const path = monaco.Uri.parse(s.location.uri).fsPath;
+          if (!/\.cs$/i.test(path) || items.some((it) => samePath(it.path, path) && it.name === s.name)) continue;
+          if (this.root && !norm(path).startsWith(norm(this.root) + '/')) continue; // project files only
+          const r = s.location.range;
+          items.push({ path, name: s.name, line: r ? r.start.line + 1 : undefined, column: r ? r.start.character + 1 : undefined });
+        }
+      }
+      S.query = q;
+      S.items = items;
+      S.index = dir > 0 ? -1 : 0;
+    }
+    if (!S.items.length) {
+      this.searchCount.textContent = '0개';
+      this.searchCount.classList.add('none');
+      return;
+    }
+    S.index = (S.index + dir + S.items.length) % S.items.length;
+    const it = S.items[S.index];
+    this.searchCount.classList.remove('none');
+    this.searchCount.textContent = `${S.index + 1}/${S.items.length}`;
+    await this.app.editors.open(it.path, { preview: true, focus: false, ...(it.line ? { line: it.line, column: it.column } : {}) });
+    await this.reveal(it.path);
+    this.searchInput.focus(); // keep typing / pressing Enter here
   }
 
   async setRoot(root) {
@@ -107,19 +205,33 @@ export class Explorer {
     const open = r.dir && this.expanded.has(r.path);
     const isSel = this.selected && samePath(this.selected, r.path);
     const dim = r.depth === 1 && !['Assets', 'Packages'].includes(r.name) && r.dir;
-    const row = el('div.tree-row' + (isSel ? '.selected' : '') + (dim ? '.dim' : ''), {
+    const cut = this.clipboard && this.clipboard.cut && samePath(this.clipboard.path, r.path);
+    const row = el('div.tree-row' + (isSel ? '.selected' : '') + (dim ? '.dim' : '') + (cut ? '.cut' : ''), {
       style: { paddingLeft: 6 + r.depth * 16 + 'px' },
       'data-path': r.path,
+      draggable: r.dir ? null : 'true',
+      ondragstart: (e) => {
+        // dropped on the hierarchy / inspector: scripts get attached, assets fill object fields.
+        // dragover handlers can't read the data, so the extension also travels as a type.
+        e.dataTransfer.setData('application/x-papyrus-path', r.path);
+        e.dataTransfer.setData('application/x-papyrus-ext' + extname(r.path), '1');
+        e.dataTransfer.setData('text/plain', r.path);
+        e.dataTransfer.effectAllowed = 'copyLink';
+      },
       onmousedown: (e) => {
         if (e.button !== 0) return;
         this.select(r.path);
         if (r.dir && e.detail === 1 && e.target.closest('.twisty')) this.toggle(r.path);
       },
       onclick: (e) => {
-        if (!r.dir && e.detail === 1) this.app.editors.open(r.path, { preview: true, focus: false });
+        if (r.dir || e.detail !== 1) return;
+        // scenes / prefabs / ScriptableObjects: show them decoded in the inspector, not as YAML text
+        if (isInspectable(r.path)) this.app.inspector.preview(r.path);
+        else this.app.editors.open(r.path, { preview: true, focus: false });
       },
       ondblclick: () => {
         if (r.dir) this.toggle(r.path);
+        else if (isInspectable(r.path)) this.app.inspector.pin(r.path);
         else this.app.editors.open(r.path, { preview: false });
       },
       oncontextmenu: (e) => {
@@ -129,7 +241,7 @@ export class Explorer {
         this.menu(r.path, r.dir, e.clientX, e.clientY);
       },
     },
-    el('span.twisty', null, r.dir ? icon(open ? 'chevron-down' : 'chevron-right') : null),
+    el('span.twisty', null, r.dir && !r.empty ? icon(open ? 'chevron-down' : 'chevron-right') : null),
     fileIcon(r.name, r.dir, open ? 'open' : ''),
     el('span.label', null, r.name),
     r.isRoot ? el('span.hint', null, this.app.project ? relPath('', this.app.project).replace(/\\/g, '/') : '') : null);
@@ -181,7 +293,8 @@ export class Explorer {
       await this.render();
       return;
     }
-    const dirs = new Set(changedPaths.map((p) => dirname(p)));
+    // the grandparent too: its listing says whether the folder is empty (expand arrow or not)
+    const dirs = new Set(changedPaths.flatMap((p) => [dirname(p), dirname(dirname(p))]));
     let touched = false;
     for (const d of dirs) {
       for (const k of this.children.keys()) {
@@ -221,6 +334,7 @@ export class Explorer {
       case 'Enter':
         if (cur) {
           if (cur.dir) this.toggle(cur.path);
+          else if (isInspectable(cur.path)) this.app.inspector.pin(cur.path);
           else this.app.editors.open(cur.path);
         }
         break;
@@ -234,23 +348,189 @@ export class Explorer {
       case 'Insert':
         if (e.altKey && cur) this.newMenu(cur.dir ? cur.path : dirname(cur.path));
         break;
-      default:
-        return;
+      default: {
+        // Ctrl+C / Ctrl+X / Ctrl+V like Rider's Solution Explorer; Ctrl+D = Rider's Copy... (F5 is Play here)
+        const k = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey ? e.key.toLowerCase() : '';
+        if (k === 'd' && cur && !cur.isRoot) this.copyTo(cur.path, dirname(cur.path));
+        else if (k === 'c' && cur && !cur.isRoot) this.setClipboard(cur.path, false);
+        else if (k === 'x' && cur && !cur.isRoot) this.setClipboard(cur.path, true);
+        else if (k === 'v' && cur) this.paste(cur.dir ? cur.path : dirname(cur.path));
+        else return;
+      }
     }
     e.preventDefault();
   }
 
+  // ------------------------------------------------------------------ copy / cut / paste
+  setClipboard(path, cut) {
+    this.clipboard = { path, cut };
+    this.el.querySelectorAll('.tree-row.cut').forEach((r) => r.classList.remove('cut'));
+    if (cut) {
+      const row = [...this.el.children].find((x) => samePath(x.dataset.path, path));
+      if (row) row.classList.add('cut');
+    }
+    navigator.clipboard.writeText(path).catch(() => {});
+    toast({ title: cut ? '잘라냈어요' : '복사했어요', message: `${basename(path)} · 붙여넣을 폴더에서 Ctrl+V`, timeout: 1800 });
+  }
+
+  async paste(dir) {
+    const c = this.clipboard;
+    if (!c) return;
+    if (!(await ofs.exists(c.path))) {
+      this.clipboard = null;
+      toast({ kind: 'warn', title: '붙여넣을 파일이 없어졌어요', message: basename(c.path), timeout: 3000 });
+      return;
+    }
+    if (c.cut) {
+      await this.moveTo(c.path, dir);
+      this.clipboard = null;
+    } else {
+      await this.copyTo(c.path, dir);
+    }
+  }
+
+  /** "Name.cs" -> "Name1.cs", "Name2.cs"... the first name not taken in dir. */
+  async freeName(dir, name, isDir) {
+    const dot = isDir ? -1 : name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : '';
+    const base = stem.replace(/\d+$/, '');
+    for (let i = 1; i < 1000; i++) {
+      const n = `${base}${i}${ext}`;
+      if (!(await ofs.exists(joinPath(dir, n)))) return n;
+    }
+    return name;
+  }
+
+  /** Rider's Copy dialog: pick the new name; for a script optionally rename the class in the copy. */
+  async copyTo(path, dir) {
+    const old = basename(path);
+    const isDir = this.isDir(path) || !!(await ofs.stat(path) || {}).dir;
+    const isCs = !isDir && /\.cs$/i.test(old);
+    const suggested = (await ofs.exists(joinPath(dir, old))) ? await this.freeName(dir, old, isDir) : old;
+    const dot = isDir ? -1 : suggested.lastIndexOf('.');
+    const r = await prompt({
+      title: isCs ? '스크립트 복사' : '복사',
+      sub: `${relPath(this.app.project, path)} → ${relPath(this.app.project, dir) || '.'}`,
+      value: suggested,
+      select: [0, dot > 0 ? dot : suggested.length],
+      check: isCs ? {
+        label: '클래스 이름도 새 파일 이름으로 바꾸기',
+        checked: this.app.settings[COPY_CLASS_KEY] !== false,
+        onChange: (v) => this.app.setSetting(COPY_CLASS_KEY, v),
+      } : null,
+    });
+    let name = r && (typeof r === 'string' ? r : r.value).trim();
+    if (!name) return;
+    if (isCs && !/\.cs$/i.test(name)) name += '.cs';
+    const to = joinPath(dir, name);
+    if (samePath(to, path)) {
+      toast({ kind: 'warn', title: '같은 이름으로는 복사할 수 없어요', message: name, timeout: 3000 });
+      return;
+    }
+    // a script copy that keeps the class name is a duplicate type: Unity won't compile it
+    const renameClass = isCs && r.checked;
+    const oldClass = old.slice(0, -3);
+    const newClass = name.slice(0, -3);
+    if (renameClass && oldClass !== newClass && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(newClass)) {
+      toast({ kind: 'error', title: '클래스 이름으로 쓸 수 없는 이름이에요', message: newClass });
+      return;
+    }
+    try {
+      // copy what the user sees: unsaved edits of the original go into the copy too
+      const tab = this.app.editors.findTab(path);
+      if (isCs && tab && tab.model) await ofs.createFile(to, tab.model.getValue());
+      else await ofs.copy(path, to);
+      if (renameClass && oldClass !== newClass) await this.renameClassInCopy(to, oldClass, newClass);
+    } catch (err) {
+      toast({ kind: 'error', title: '복사할 수 없어요', message: String(err.message || err) });
+      return;
+    }
+    this.expanded.add(dir);
+    await this.refresh([to]);
+    this.select(to);
+    if (isCs) await this.app.editors.open(to);
+    this.app.unityRefreshSoon();
+  }
+
+  /**
+   * In the copied file only (never the original or its users): the type, its constructors and
+   * destructor, and every reference to it inside the file (Instance fields, Singleton<T>, nameof...).
+   */
+  async renameClassInCopy(file, oldName, newName) {
+    const text = (await ofs.readFile(file)).text || '';
+    const esc = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (!new RegExp(`\\b(?:class|struct|interface|enum|record)\\s+${esc}\\b`).test(text)) {
+      toast({ kind: 'warn', title: '클래스 이름은 그대로 뒀어요', message: `이 파일에 '${oldName}' 클래스가 없어요. 이름이 겹치면 Unity가 컴파일하지 못해요.`, timeout: 5000 });
+      return;
+    }
+    // whole identifiers only: OldName2 or MyOldName stay as they are
+    const out = text.replace(new RegExp(`(?<![A-Za-z0-9_@])${esc}(?![A-Za-z0-9_])`, 'g'), newName);
+    await ofs.writeFile(file, out);
+  }
+
+  /** Cut + paste: move the file with its .meta (Unity keeps the GUID, so references survive). */
+  async moveTo(path, dir) {
+    if (samePath(dirname(path), dir)) return;
+    let name = basename(path);
+    if (await ofs.exists(joinPath(dir, name))) {
+      const v = await prompt({ title: '이동', sub: `'${name}'이(가) 이미 있어요. 새 이름:`, value: await this.freeName(dir, name, this.isDir(path)) });
+      if (!v || !v.trim()) return;
+      name = v.trim();
+    }
+    const to = joinPath(dir, name);
+    try {
+      const tab = this.app.editors.findTab(path);
+      if (tab && tab.dirty) await this.app.editors.save(tab);
+      await ofs.rename(path, to);
+      if (tab) {
+        await this.app.editors.closeTab(tab, { force: true, noHistory: true });
+        await this.app.editors.open(to);
+      }
+    } catch (err) {
+      toast({ kind: 'error', title: '이동할 수 없어요', message: String(err.message || err) });
+      return;
+    }
+    this.expanded.add(dir);
+    await this.refresh([path, to]);
+    this.select(to);
+    this.app.unityRefreshSoon();
+  }
+
   menu(path, isDir, x, y) {
     const dir = isDir ? path : dirname(path);
+    const ext = isDir ? '' : extname(path);
+    const ins = this.app.inspector;
+    const live = this.app.unityStatus.state === 'connected';
+    const sel = ins.selected && typeof ins.selected.id === 'number' ? ins.selected : null;
+    const unityItems = [];
+    if (ext === '.cs') {
+      unityItems.push(
+        { label: sel ? '선택한 오브젝트에 붙이기' : '선택한 오브젝트에 붙이기 (인스펙터에서 먼저 고르세요)', icon: 'symbol-class', disabled: !live || !sel, action: () => ins.attachScript(sel.id, path) },
+        { label: '이 스크립트로 새 오브젝트 만들기', icon: 'add', disabled: !live, action: () => ins.createObject({ scriptPath: path }) },
+        { label: 'ScriptableObject 에셋 만들기', icon: 'symbol-structure', disabled: !live, action: () => ins.createAsset(path) },
+        '-');
+    } else if (isInspectable(path)) {
+      unityItems.push(
+        { label: '인스펙터에 고정', icon: 'lock', action: () => ins.pin(path) },
+        { label: '텍스트로 열기', icon: 'file-code', action: () => this.app.editors.open(path, { preview: false }) },
+        '-');
+    }
     contextMenu(x, y, [
+      ...unityItems,
+      { label: '새 폴더…', icon: 'new-folder', action: () => this.newFolder(dir) },
       { label: '새 C# 스크립트…', icon: 'symbol-class', key: this.app.kb('papyrus.newScript'), action: () => this.newScript(dir) },
       { label: '새 파일…', icon: 'new-file', action: () => this.newFile(dir) },
-      { label: '새 폴더…', icon: 'new-folder', action: () => this.newFolder(dir) },
+      '-',
+      { label: '잘라내기', icon: 'clippy', key: 'Ctrl+X', disabled: samePath(path, this.root), action: () => this.setClipboard(path, true) },
+      { label: '복사', icon: 'copy', key: 'Ctrl+C', disabled: samePath(path, this.root), action: () => this.setClipboard(path, false) },
+      { label: this.clipboard ? `붙여넣기 (${basename(this.clipboard.path)})` : '붙여넣기', icon: 'clippy', key: 'Ctrl+V', disabled: !this.clipboard, action: () => this.paste(dir) },
+      { label: '복제…', icon: 'files', key: 'Ctrl+D', disabled: samePath(path, this.root), action: () => this.copyTo(path, dirname(path)) },
       '-',
       { label: '이름 바꾸기…', icon: 'edit', key: 'F2', disabled: samePath(path, this.root), action: () => this.rename(path) },
       { label: '삭제', icon: 'trash', key: 'Delete', disabled: samePath(path, this.root), action: () => this.remove(path) },
       '-',
-      { label: '경로 복사', icon: 'copy', action: () => navigator.clipboard.writeText(path) },
+      { label: '경로 복사', icon: 'link', action: () => navigator.clipboard.writeText(path) },
       { label: '파일 탐색기에서 열기', icon: 'folder-opened', action: () => window.papyrus.app.reveal(path) },
       { label: '새로고침', icon: 'refresh', action: () => this.refresh() },
     ]);
@@ -260,9 +540,9 @@ export class Explorer {
     const r = this.el.querySelector('.tree-row.selected');
     const b = r ? r.getBoundingClientRect() : { left: 100, bottom: 100 };
     contextMenu(b.left + 30, b.bottom, [
-      { label: '새 C# 스크립트…', icon: 'symbol-class', action: () => this.newScript(dir) },
-      { label: '새 파일…', icon: 'new-file', action: () => this.newFile(dir) },
       { label: '새 폴더…', icon: 'new-folder', action: () => this.newFolder(dir) },
+      { label: '새 C# 스크립트…', icon: 'symbol-class', key: this.app.kb('papyrus.newScript'), action: () => this.newScript(dir) },
+      { label: '새 파일…', icon: 'new-file', action: () => this.newFile(dir) },
     ]);
   }
 
@@ -339,12 +619,33 @@ export class Explorer {
   async rename(path) {
     const old = basename(path);
     const dot = old.lastIndexOf('.');
-    const name = await prompt({ title: '이름 바꾸기', sub: relPath(this.app.project, path), value: old, select: [0, dot > 0 ? dot : old.length] });
+    const isCs = /\.cs$/i.test(old);
+    const r = await prompt({
+      title: '이름 바꾸기',
+      sub: relPath(this.app.project, path),
+      value: old,
+      select: [0, dot > 0 ? dot : old.length],
+      // remembered across renames and restarts
+      check: isCs ? {
+        label: '클래스 이름도 같이 바꾸기',
+        checked: !!this.app.settings[RENAME_CLASS_KEY],
+        onChange: (v) => this.app.setSetting(RENAME_CLASS_KEY, v),
+      } : null,
+    });
+    const name = r && (typeof r === 'string' ? r : r.value).trim();
     if (!name || name === old) return;
-    const to = joinPath(dirname(path), name.trim());
+    const to = joinPath(dirname(path), name);
     try {
+      if (isCs && r.checked && /\.cs$/i.test(name)) await this.renameClassForFile(path, old.slice(0, -3), name.slice(0, -3));
       const tab = this.app.editors.findTab(path);
       if (tab && tab.dirty) await this.app.editors.save(tab);
+      if (!(await ofs.exists(path)) && (await ofs.exists(to))) {
+        // the language server's rename already moved the file along with the class
+        await this.refresh([path, to]);
+        this.select(to);
+        this.app.unityRefreshSoon();
+        return;
+      }
       await ofs.rename(path, to);
       if (tab) {
         await this.app.editors.closeTab(tab, { force: true, noHistory: true });
@@ -358,9 +659,43 @@ export class Explorer {
     }
   }
 
+  // Renames the type named like the file (Foo.cs -> class Foo) everywhere via the language server,
+  // the same as F2 on the class name. Open files it touches are left unsaved, like F2.
+  async renameClassForFile(path, oldName, newName) {
+    if (oldName === newName) return;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(newName)) {
+      toast({ kind: 'warn', title: '클래스 이름은 그대로 뒀어요', message: `'${newName}'은(는) 클래스 이름으로 쓸 수 없어요.` });
+      return;
+    }
+    const lsp = this.app.lsp;
+    if (!lsp.running || !lsp.caps || !lsp.caps.renameProvider) {
+      toast({ kind: 'warn', title: '클래스 이름은 그대로 뒀어요', message: 'C# 언어 서버가 준비된 뒤에 다시 시도하세요.' });
+      return;
+    }
+    const tab = this.app.editors.findTab(path);
+    const text = tab && tab.model ? tab.model.getValue() : (await ofs.readFile(path)).text || '';
+    const esc = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const decl = new RegExp(`\\b(?:class|struct|interface|enum|record)\\s+(${esc})\\b`).exec(text);
+    if (!decl) {
+      toast({ kind: 'warn', title: '클래스 이름은 그대로 뒀어요', message: `이 파일에 '${oldName}' 클래스가 없어요.` });
+      return;
+    }
+    const offset = decl.index + decl[0].length - oldName.length;
+    const before = text.slice(0, offset).split(/\r?\n/);
+    const position = { line: before.length - 1, character: before[before.length - 1].length };
+    const uri = monaco.Uri.file(path).toString();
+    const edit = await lsp.request('textDocument/rename', { textDocument: { uri }, position, newName });
+    if (!edit) return;
+    const E = this.app.editors;
+    const wasDirty = new Set(E.dirtyTabs);
+    await E.applyWorkspaceEdit(edit);
+    // The file now holds the new class name, so the usages must reach disk too or Unity compiles
+    // a half-renamed project. Save only what this rename touched; leave the user's own edits.
+    for (const t of E.dirtyTabs) if (!wasDirty.has(t)) await E.save(t);
+  }
+
   async remove(path) {
-    const r = await window.papyrus.app.confirm({ message: `'${basename(path)}'을(를) 휴지통으로 옮길까요?`, detail: '.meta 파일도 같이 옮겨져요.', buttons: ['삭제', '취소'], type: 'warning' });
-    if (r !== 0) return;
+    if (!(await this.confirmDelete(path))) return;
     const tab = this.app.editors.findTab(path);
     if (tab) await this.app.editors.closeTab(tab, { force: true });
     try {
@@ -370,5 +705,146 @@ export class Explorer {
     }
     await this.refresh([path]);
     this.app.unityRefreshSoon();
+  }
+
+  /**
+   * Rider-style delete dialog. Resolves true to delete. For a C# script, "안전 삭제" (on by default)
+   * first looks up who uses its class; if anyone does, the dialog lists the usages (click one to
+   * jump there) and asks "그래도 삭제" instead of deleting right away.
+   */
+  async confirmDelete(path) {
+    const st = await ofs.stat(path);
+    const isDir = !!(st && st.dir);
+    const name = basename(path);
+    const cls = name.replace(/\.cs$/i, '');
+    const isCs = !isDir && /\.cs$/i.test(name);
+    const lsp = this.app.lsp;
+    const canSearch = !!(isCs && lsp && lsp.running && lsp.caps && lsp.caps.referencesProvider);
+    let count = 0;
+    if (isDir) {
+      const norm = (p) => p.replace(/\//g, '\\').toLowerCase();
+      const pre = norm(path).replace(/\\+$/, '') + '\\';
+      count = (this.app.fileIndex || []).filter((f) => norm(f).startsWith(pre)).length;
+    }
+    let safe = canSearch;
+    try { if (localStorage.getItem(SAFE_DELETE_KEY) === '0') safe = false; } catch { /* default on */ }
+
+    return new Promise((resolve) => {
+      const body = el('div.cd-body');
+      const foot = el('div.cd-foot');
+      const prevFocus = document.activeElement;
+      const close = (v) => {
+        back.remove();
+        if (prevFocus && prevFocus.isConnected && prevFocus.focus) prevFocus.focus(); // back to the tree row
+        resolve(v);
+      };
+      const back = el('div.dialog-back.cd-back', {
+        tabindex: '-1',
+        onmousedown: (e) => { if (e.target === back) close(false); },
+        onkeydown: (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); } },
+      }, el('div.cd-dialog', { role: 'dialog', 'aria-label': '삭제' },
+        el('div.cd-head', null,
+          el('span.cd-title', null, '삭제'),
+          el('button.cd-x', { title: '닫기 (Esc)', onclick: () => close(false) }, icon('close'))),
+        body, foot));
+
+      const ask = () => {
+        const box = el('input', {
+          type: 'checkbox', checked: safe, disabled: !canSearch,
+          onchange: () => { safe = box.checked; try { localStorage.setItem(SAFE_DELETE_KEY, safe ? '1' : '0'); } catch { /* ignore */ } },
+        });
+        const what = isDir
+          ? `'${name}' 폴더${count ? `와 안의 파일 ${count}개를` : '를'} 삭제할까요?`
+          : `'${name}' 파일을 삭제할까요?`;
+        body.replaceChildren(
+          el('div.cd-main', null, fileIcon(name, isDir),
+            el('div.cd-text', null,
+              el('div.cd-msg', null, what),
+              el('div.cd-path', { title: path }, relPath(this.app.project, path)))),
+          isCs ? el('label.cd-check' + (canSearch ? '' : '.disabled'), null, box,
+            el('span', null, '안전 삭제 (사용처 검색)'),
+            canSearch ? null : el('span.cd-hint', null, 'C# 언어 서버 준비 중')) : null,
+          el('div.cd-note', null, icon('info'),
+            el('span', null, isDir ? '안의 .meta 파일까지 휴지통으로 옮겨져요. 휴지통에서 되돌릴 수 있어요.' : '.meta 파일도 함께 휴지통으로 옮겨져요. 휴지통에서 되돌릴 수 있어요.')));
+        const ok = el('button.btn.primary', { onclick: () => (safe && canSearch ? search() : close(true)) }, '삭제');
+        foot.replaceChildren(el('button.btn', { onclick: () => close(false) }, '취소'), ok);
+        ok.focus();
+      };
+
+      const search = async () => {
+        body.replaceChildren(el('div.cd-busy', null, icon('loading', 'codicon-modifier-spin'), `'${cls}'의 사용처를 찾는 중…`));
+        const cancel = el('button.btn', { onclick: () => close(false) }, '취소');
+        foot.replaceChildren(cancel);
+        cancel.focus();
+        let refs = null;
+        try { refs = await this.findTypeUsages(path, cls); } catch { refs = null; }
+        if (!back.isConnected) return; // cancelled meanwhile
+        if (refs && !refs.length) return close(true);
+        usages(refs);
+      };
+
+      const usages = (refs) => {
+        const kids = [];
+        if (!refs) {
+          kids.push(el('div.cd-warn', null, icon('warning'), el('div', null,
+            el('div.cd-msg', null, '사용처를 확인하지 못했어요'),
+            el('div.cd-sub', null, '언어 서버가 응답하지 않았어요. 그래도 삭제할 수 있어요.'))));
+        } else {
+          const files = new Set(refs.map((r) => r.path.toLowerCase())).size;
+          kids.push(el('div.cd-warn', null, icon('warning'), el('div', null,
+            el('div.cd-msg', null, `'${cls}'을(를) 사용하는 곳이 ${refs.length}곳 있어요`),
+            el('div.cd-sub', null, `파일 ${files}개 · 삭제하면 이 코드는 컴파일되지 않아요.`))));
+          kids.push(el('div.cd-list', null, refs.slice(0, 200).map((r) => el('div.cd-use', {
+            title: `${relPath(this.app.project, r.path)}:${r.line + 1}`,
+            onclick: () => {
+              close(false);
+              this.app.editors.open(r.path, { line: r.line + 1, column: r.character + 1, pushHistory: true });
+            },
+          }, fileIcon(basename(r.path), false),
+          el('span.cd-file', null, basename(r.path)),
+          el('span.cd-ln', null, `:${r.line + 1}`),
+          el('span.cd-code', null, r.text.trim())))));
+        }
+        body.replaceChildren(...kids);
+        const cancel = el('button.btn', { onclick: () => close(false) }, '취소');
+        foot.replaceChildren(cancel, el('button.btn.danger', { onclick: () => close(true) }, '그래도 삭제'));
+        cancel.focus();
+      };
+
+      document.getElementById('overlay-root').append(back);
+      ask();
+    });
+  }
+
+  /** Where the file's own class (named like the file) is used in other files, via Roslyn. */
+  async findTypeUsages(path, cls) {
+    const tab = this.app.editors.findTab(path);
+    const text = tab && tab.model ? tab.model.getValue() : (await ofs.readFile(path)).text || '';
+    const esc = cls.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const decl = new RegExp(`\\b(?:class|struct|interface|enum|record)\\s+(${esc})\\b`).exec(text);
+    if (!decl) return []; // no type named after the file: nothing to break
+    const offset = decl.index + decl[0].length - cls.length;
+    const before = text.slice(0, offset).split(/\r?\n/);
+    const position = { line: before.length - 1, character: before[before.length - 1].length };
+    const req = this.app.lsp.request('textDocument/references', {
+      textDocument: { uri: monaco.Uri.file(path).toString() },
+      position,
+      context: { includeDeclaration: false },
+    });
+    const res = await Promise.race([req, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))]);
+    const lines = new Map(); // file -> its lines, read once
+    const out = [];
+    for (const loc of res || []) {
+      const p = monaco.Uri.parse(loc.uri).fsPath;
+      if (!p || samePath(p, path)) continue; // the class using itself doesn't count
+      if (!lines.has(p)) {
+        const t = this.app.editors.findTab(p);
+        let src = '';
+        try { src = t && t.model ? t.model.getValue() : (await ofs.readFile(p)).text || ''; } catch { /* unreadable */ }
+        lines.set(p, src.split(/\r?\n/));
+      }
+      out.push({ path: p, line: loc.range.start.line, character: loc.range.start.character, text: lines.get(p)[loc.range.start.line] || '' });
+    }
+    return out;
   }
 }

@@ -20,6 +20,8 @@ module.exports = {
   directories: { output: 'release', buildResources: 'build' },
   files: ['package.json', 'src/main/**', 'src/preload/**', 'dist/**', 'build/icon.png', '!**/*.map'],
   extraResources: [{ from: 'unity-package', to: 'unity-package', filter: ['**/*'] }],
+  // Next to PAPyrus.exe, beside Electron's own LICENSE.electron.txt / LICENSES.chromium.html.
+  extraFiles: [{ from: 'THIRD_PARTY_NOTICES.txt', to: 'THIRD_PARTY_NOTICES.txt' }],
   asar: true,
   afterPack: 'scripts/after-pack.cjs',
   // Without repo info the build still works; the installed app then reads "update.repo" from settings.

@@ -1,6 +1,6 @@
 // Learned completions that sit next to Roslyn's symbol completions:
 //   1. Lines you type are remembered across sessions (localStorage); the more often a line is
-//      typed or picked, the higher it ranks. Typing the start of such a line offers the rest.
+//      typed or picked, the higher it ranks. Typing the first word of such a line offers the rest.
 //   2. Lines that repeat in the open files are offered the same way, so copy-pasted patterns
 //      complete even before they've been learned.
 //   3. Words from the open files and from what you've typed: in every language, and in C#
@@ -13,7 +13,7 @@ const MAX_LINES = 4000;
 const MAX_WORDS = 6000;
 const MIN_LINE_LEN = 6;
 const MAX_LINE_LEN = 200;
-const MIN_LINE_PREFIX = 3; // characters typed on the line before whole-line suggestions show
+const MIN_LINE_PREFIX = 3; // characters of the first word before whole-line suggestions show
 const MIN_WORD_PREFIX = 2;
 const MAX_LINE_ITEMS = 6;
 const MAX_WORD_ITEMS = 30;
@@ -25,6 +25,9 @@ const USED_COMMAND = 'papyrus.codeMemory.used';
 
 const WORD_RE = /[A-Za-z_][A-Za-z0-9_]{2,}/g;
 const ONLY_PUNCT_RE = /^[\s{}()[\];,.]*$/;
+// A line ending like this continues on the next line (`Foo(a,`, `x =`, `a &&`, `=>`): it's a
+// fragment, and offering it as a whole line would insert a cut-off statement.
+const CONTINUES_RE = /(?:[,(\[+\-*/%=&|.?:!<^~]|=>)$/;
 const CLOSERS_RE = /^[\s)\]}"';]*$/;
 
 // Unity C# snippets. `line: true` = only offered as the first word on a line.
@@ -62,8 +65,30 @@ function normalizeLine(text) {
   const t = text.trim();
   if (t.length < MIN_LINE_LEN || t.length > MAX_LINE_LEN) return null;
   if (t.startsWith('//') || t.startsWith('/*') || t.startsWith('*')) return null;
-  if (ONLY_PUNCT_RE.test(t)) return null;
+  if (ONLY_PUNCT_RE.test(t) || CONTINUES_RE.test(t) || !balanced(t)) return null;
   return t;
+}
+
+// ( ) and [ ] must pair up within the line; otherwise it's a piece of a multi-line statement
+// (`Foo(a,` … `b, c);`). Braces are exempt: `void Update() {` is a normal whole line.
+function balanced(t) {
+  let paren = 0;
+  let square = 0;
+  let quote = '';
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (quote) {
+      if (ch === '\\') i++;
+      else if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === '(') paren++;
+    else if (ch === ')') { if (--paren < 0) return false; }
+    else if (ch === '[') square++;
+    else if (ch === ']') { if (--square < 0) return false; }
+  }
+  return paren === 0 && square === 0 && !quote;
 }
 
 function bump(map, key, by = 1) {
@@ -102,7 +127,9 @@ export class CodeMemory {
   load() {
     try {
       const s = JSON.parse(localStorage.getItem(STORE_KEY) || '{}');
-      return { lines: s.lines || {}, words: s.words || {}, snippets: s.snippets || {} };
+      // Drop fragments learned by older builds (half lines from Enter mid-line, multi-line pieces).
+      const lines = Object.fromEntries(Object.entries(s.lines || {}).filter(([t]) => normalizeLine(t) === t));
+      return { lines, words: s.words || {}, snippets: s.snippets || {} };
     } catch {
       return { lines: {}, words: {}, snippets: {} };
     }
@@ -133,7 +160,11 @@ export class CodeMemory {
         const breaks = c.text.split('\n').length - 1;
         if (breaks === 0 || breaks > MAX_PASTE_LINES) continue;
         const line = c.range.startLineNumber;
-        if (line <= model.getLineCount()) this.learnLine(model.getLineContent(line));
+        if (line + breaks > model.getLineCount()) continue;
+        // Enter in the middle of a line splits it: the part left behind is only half a line.
+        // (Pasted blocks end on the last pasted line, so check the line after the insertion.)
+        if (breaks === 1 && model.getLineContent(line + 1).trim() !== '') continue;
+        this.learnLine(model.getLineContent(line));
       }
     });
   }
@@ -180,12 +211,13 @@ export class CodeMemory {
     const prefix = before.trimStart();
     const lang = model.getLanguageId();
     const word = model.getWordUntilPosition(position);
+    const atLineStart = prefix === word.word;
     const wordRange = new monaco.Range(ln, word.startColumn, ln, position.column);
     const { lines, words } = this.index();
     const suggestions = [];
 
-    // 1+2. whole lines: learned + repeated in open files
-    if (prefix.length >= MIN_LINE_PREFIX && CLOSERS_RE.test(after)) {
+    // 1+2. whole lines: offer templates at the first word, before a declaration/expression is underway.
+    if (atLineStart && prefix.length >= MIN_LINE_PREFIX && CLOSERS_RE.test(after)) {
       const start = before.length - prefix.length + 1;
       const range = new monaco.Range(ln, start, ln, lineText.length + 1); // also replaces auto-closed ) " ;
       const fileLines = lines.get(lang) || new Map();
@@ -230,8 +262,7 @@ export class CodeMemory {
     }
 
     // 4. Unity snippets
-    if (lang === 'csharp' && word.word.length >= 1) {
-      const atLineStart = prefix === word.word;
+    if (lang === 'csharp' && word.word.length >= MIN_WORD_PREFIX) {
       for (const s of SNIPPETS) {
         if (s.line && !atLineStart) continue;
         if (!s.key.startsWith(word.word.toLowerCase())) continue;

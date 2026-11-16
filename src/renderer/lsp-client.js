@@ -1,9 +1,12 @@
 // Renderer side of the C# language server: document sync, diagnostics and Monaco providers.
 import { monaco } from './monaco.js';
 import * as cv from './conv.js';
+import { UNITY_ATTRIBUTE_NAMES } from './unity-completions.js';
 
 const api = window.papyrus.lsp;
 let reqSeq = 1;
+const INH_CACHE_MS = 10000; // inheritance lens counts for an unchanged file are reused this long
+const LENS_KICK_MS = [400, 1500]; // re-request lenses at these delays after a file is first shown
 
 export class LspClient {
   constructor({ onStatus, onApplyEdit, onCommand, onShowDocument, onMessage }) {
@@ -15,6 +18,7 @@ export class LspClient {
     this.pullResults = new Map(); // uri -> Map(identifier -> {resultId, items})
     this.lastDiagnostics = new Map(); // uri -> lsp diagnostics (all identifiers merged)
     this.providers = [];
+    this.lensKickedFor = null; // model whose lenses were last re-requested after being shown
     this.onStatus = onStatus;
     this.onApplyEdit = onApplyEdit;
     this.onCommand = onCommand;
@@ -195,6 +199,24 @@ export class LspClient {
   saved(model) {
     const uri = model.uri.toString();
     if (this.docs.has(uri)) this.notify('textDocument/didSave', { textDocument: { uri } });
+  }
+
+  // A closed C# file was rewritten on disk by us (e.g. a rename that touched files without a tab).
+  // Roslyn keeps its own copy of closed files and doesn't notice our write, so the open files keep
+  // resolving against the old text: renamed symbols lose their color and completion. Hand it the
+  // new text (open + close makes it take this version) and tell it the file changed.
+  syncDiskWrite(rawUri, text) {
+    const uri = normUri(rawUri);
+    if (!this.caps || !/\.cs$/i.test(uri) || this.docs.has(uri)) return; // open docs sync via didChange
+    this.notify('textDocument/didOpen', { textDocument: { uri, languageId: 'csharp', version: 1, text } });
+    this.notify('textDocument/didClose', { textDocument: { uri } });
+    this.notify('workspace/didChangeWatchedFiles', { changes: [{ uri, type: 2 }] });
+  }
+
+  // Re-ask Roslyn for colors and diagnostics of the open files after other files changed.
+  refreshAfterExternalEdit() {
+    this.refreshSemantic();
+    this.pullAll();
   }
 
   // ------------------------------------------------------------------ pull diagnostics
@@ -569,9 +591,19 @@ export class LspClient {
             command: l.command ? { id: 'papyrus.lsp.command', title: l.command.title, arguments: [l.command] } : undefined,
             __lsp: l,
           }));
+          lenses.push(...await self.inheritanceLenses(model, token));
+          // Monaco resolves lenses only once their view zones are on screen, which they aren't yet
+          // the first time a file is shown: the Roslyn "N references" stayed blank until a scroll.
+          // Ask once more right after a file is first shown in the editor.
+          const shown = monaco.editor.getEditors().some((e) => e.getModel() === model);
+          if (shown && self.lensKickedFor !== model) {
+            self.lensKickedFor = model;
+            for (const ms of LENS_KICK_MS) setTimeout(() => self.codeLensEmitter && self.codeLensEmitter.fire(self.codeLensProvider), ms);
+          }
           return { lenses, dispose() {} };
         },
         resolveCodeLens: resolvable ? async (model, lens, token) => {
+          if (!lens.__lsp) return lens; // our inheritance lenses come resolved
           const r = await self.request('codeLens/resolve', lens.__lsp, token);
           if (r && r.command) lens.command = { id: 'papyrus.lsp.command', title: r.command.title, arguments: [r.command, model.uri.toString()] };
           return lens;
@@ -579,6 +611,52 @@ export class LspClient {
       };
       add(L.registerCodeLensProvider(sel, this.codeLensProvider));
     }
+  }
+
+  // Rider-style "상속 N개" / "구현 N개" / "재정의 N개" lenses on classes, interfaces and on
+  // virtual / abstract / interface members. Only symbols that actually have some get a lens,
+  // so the counts are fetched here (a handful of requests per file) rather than on resolve.
+  async inheritanceLenses(model, token) {
+    if (!this.caps || !this.caps.implementationProvider) return [];
+    const uri = model.uri.toString();
+    const version = model.getVersionId();
+    const cached = this.inhCache && this.inhCache.get(uri);
+    // inheritors live in other files too, so the per-version cache only spares rapid re-asks
+    if (cached && cached.version === version && Date.now() - cached.at < INH_CACHE_MS) return cached.lenses;
+
+    const syms = await this.documentSymbols(model, token).catch(() => []);
+    const cands = [];
+    const walk = (list, parentIsInterface) => {
+      for (const s of list || []) {
+        const pos = (s.selectionRange || s.range).start;
+        const line = model.getLineContent(pos.line + 1);
+        if (s.kind === 5 || s.kind === 11) { // class, interface
+          if (s.kind === 11 || !/\b(static|sealed)\b/.test(line)) cands.push({ pos, kind: s.kind === 11 ? 'iface' : 'class' });
+        } else if ((s.kind === 6 || s.kind === 7 || s.kind === 24) && (parentIsInterface || /\b(virtual|abstract)\b/.test(line))) {
+          cands.push({ pos, kind: parentIsInterface || /\babstract\b/.test(line) ? 'impl' : 'override' });
+        }
+        walk(s.children, s.kind === 11);
+      }
+    };
+    walk(syms, false);
+
+    const lenses = [];
+    await Promise.all(cands.slice(0, 40).map(async (c) => {
+      const locs = await this.implementations(uri, c.pos).catch(() => []);
+      if (!locs.length || (token && token.isCancellationRequested)) return;
+      const n = locs.length;
+      // same wording as Roslyn's Korean "참조 N개"
+      const title = c.kind === 'class' ? `상속 ${n}개` : c.kind === 'override' ? `재정의 ${n}개` : `구현 ${n}개`;
+      lenses.push({
+        range: new monaco.Range(c.pos.line + 1, 1, c.pos.line + 1, 1),
+        command: { id: 'papyrus.lsp.command', title, arguments: [{ command: 'papyrus.showImplementations', arguments: [uri, c.pos] }, uri] },
+      });
+    }));
+    if (!token || !token.isCancellationRequested) {
+      this.inhCache = this.inhCache || new Map();
+      this.inhCache.set(uri, { version, lenses, at: Date.now() });
+    }
+    return lenses;
   }
 
   async documentSymbols(model, token) {
@@ -605,6 +683,22 @@ export class LspClient {
       context: { includeDeclaration: false },
     });
     return r || [];
+  }
+
+  // Derived types / implementations / overrides of the symbol at an LSP position, as plain
+  // {uri, range} locations, without the symbol's own declaration.
+  async implementations(uri, lspPos) {
+    if (!this.caps || !this.caps.implementationProvider) return [];
+    const r = await this.request('textDocument/implementation', { textDocument: { uri }, position: lspPos });
+    const list = (Array.isArray(r) ? r : r ? [r] : []).map((l) => (l.targetUri ? { uri: l.targetUri, range: l.targetSelectionRange || l.targetRange } : l));
+    const self = normUri(uri);
+    return list.filter((l) => !(normUri(l.uri) === self && l.range.start.line <= lspPos.line && l.range.end.line >= lspPos.line));
+  }
+
+  async definitionAt(model, position) {
+    if (!this.caps || !this.caps.definitionProvider) return [];
+    const r = await this.request('textDocument/definition', { textDocument: { uri: model.uri.toString() }, position: cv.toPos(position) });
+    return (Array.isArray(r) ? r : r ? [r] : []).map((l) => (l.targetUri ? { uri: l.targetUri, range: l.targetSelectionRange || l.targetRange } : l));
   }
 
   // Converts an LSP WorkspaceEdit to Monaco's. Edits for files that aren't loaded as models are
@@ -673,6 +767,8 @@ function convertCompletion(it, defaults, fallback, model) {
     kind: cv.completionKind(it.kind),
     detail: it.detail,
     documentation: cv.markdown(it.documentation) || undefined,
+    // Unity's inspector attributes (SerializeField, Header...) rank first, see unity-completions.js
+    __unityAttr: UNITY_ATTRIBUTE_NAMES.has(it.label),
     sortText: it.sortText,
     filterText: it.filterText,
     preselect: it.preselect,

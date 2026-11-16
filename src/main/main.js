@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, nativeTheme, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, nativeTheme, net, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -10,6 +10,7 @@ const settings = require('./settings');
 const { ensureUnityAnalyzers } = require('./analyzers');
 const updater = require('./updater');
 const setup = require('./setup');
+const { parseLaunchArgs } = require('./launch');
 
 app.setName('PAPyrus');
 // Fixed location so the Unity package can find install-path.txt and the analyzers.
@@ -19,48 +20,15 @@ app.setPath('userData', path.join(app.getPath('appData'), 'PAPyrus'));
 // Accepted:
 //   PAPyrus.exe [--project <dir>] [--goto <file>[:line[:col]]]
 //   PAPyrus.exe <dir-or-file>
-function parseArgs(argv) {
-  const out = { project: null, goto: null };
-  const args = argv.slice(app.isPackaged ? 1 : 2);
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === '--project') out.project = args[++i];
-    else if (a === '--goto') out.goto = parseGoto(args[++i]);
-    else if (!a.startsWith('-') && a !== '.') {
-      try {
-        const st = fs.statSync(a);
-        if (st.isDirectory()) out.project = path.resolve(a);
-        else out.goto = { file: path.resolve(a), line: 1, column: 1 };
-      } catch { /* ignore */ }
-    }
-  }
-  if (out.goto && !out.project) out.project = findProjectRoot(out.goto.file);
-  if (out.project) out.project = path.resolve(out.project);
-  return out;
+function parseArgs(argv, cwd = process.cwd()) {
+  return parseLaunchArgs(argv.slice(app.isPackaged ? 1 : 2), cwd);
 }
 
-function parseGoto(s) {
-  if (!s) return null;
-  // Windows paths contain "C:" so parse numbers from the right.
-  const m = s.match(/^(.*?)(?::(-?\d+))?(?::(-?\d+))?$/);
-  const file = m[1];
-  const line = Math.max(1, parseInt(m[2] || '1', 10) || 1);
-  const column = Math.max(1, parseInt(m[3] || '1', 10) || 1);
-  return { file: path.resolve(file), line, column };
-}
-
-function findProjectRoot(file) {
-  let dir = path.dirname(file);
-  for (let i = 0; i < 30; i++) {
-    if (fs.existsSync(path.join(dir, 'Assets')) && fs.existsSync(path.join(dir, 'ProjectSettings'))) return dir;
-    try {
-      if (fs.readdirSync(dir).some((f) => f.endsWith('.sln'))) return dir;
-    } catch { /* ignore */ }
-    const up = path.dirname(dir);
-    if (up === dir) break;
-    dir = up;
-  }
-  return path.dirname(file);
+function externalEditorPath() {
+  if (app.isPackaged) return process.execPath;
+  if (process.platform !== 'win32') return null;
+  const launcher = path.join(__dirname, '../../node_modules/.cache/papyrus/PAPyrus.exe');
+  return fs.existsSync(launcher) ? launcher : null;
 }
 
 // ---------------------------------------------------------------- windows
@@ -114,6 +82,10 @@ function createWindow(project, goto) {
   sessions.set(win.id, s);
 
   win.once('ready-to-show', () => win.show());
+  // the Unity inspector window laid over the right dock follows the IDE window
+  for (const ev of ['move', 'resize', 'minimize', 'restore', 'maximize', 'unmaximize', 'show', 'hide', 'enter-full-screen', 'leave-full-screen']) {
+    win.on(ev, () => placeUnityMirror(s));
+  }
   win.on('close', () => {
     if (!win.isMaximized() && !win.isMinimized()) {
       const b = win.getBounds();
@@ -199,11 +171,13 @@ function routeOpen(args) {
 }
 
 // ---------------------------------------------------------------- app lifecycle
-if (!app.requestSingleInstanceLock()) {
+const initialLaunch = parseArgs(process.argv);
+// Chromium can reorder switches and positional values in the second-instance event.
+if (!app.requestSingleInstanceLock({ launch: initialLaunch })) {
   app.quit();
 } else {
-  app.on('second-instance', (_e, argv) => {
-    const args = parseArgs(argv);
+  app.on('second-instance', (_e, argv, cwd, data) => {
+    const args = data?.launch ?? parseArgs(argv, cwd);
     if (!args.project) {
       const any = [...sessions.values()][0];
       if (any) focusWindow(any.win);
@@ -218,17 +192,19 @@ if (!app.requestSingleInstanceLock()) {
     updater.init(settings);
     // Let the Unity package find us (portable installs included).
     try {
-      fs.mkdirSync(app.getPath('userData'), { recursive: true });
-      fs.writeFileSync(path.join(app.getPath('userData'), 'install-path.txt'), process.execPath);
+      const editor = externalEditorPath();
+      if (editor) {
+        fs.mkdirSync(app.getPath('userData'), { recursive: true });
+        fs.writeFileSync(path.join(app.getPath('userData'), 'install-path.txt'), editor);
+      }
     } catch { /* ignore */ }
 
-    const args = parseArgs(process.argv);
-    let project = args.project;
+    let project = initialLaunch.project;
     if (!project && settings.get('reopenLastProject') !== false) {
       const recent = settings.get('recentProjects') || [];
       if (recent[0] && fs.existsSync(recent[0])) project = recent[0];
     }
-    createWindow(project, args.goto);
+    createWindow(project, initialLaunch.goto);
   });
 
   app.on('window-all-closed', () => app.quit());
@@ -243,6 +219,7 @@ ipcMain.handle('app:init', (e) => {
     project: s.project,
     goto,
     platform: process.platform,
+    externalEditorPath: externalEditorPath(),
     version: app.getVersion(),
     electron: process.versions.electron,
     settings: settings.all(),
@@ -377,6 +354,11 @@ ipcMain.handle('unity:start', (e) => {
   s.unity = new UnityBridge({
     root: s.project,
     onMessage: (msg) => {
+      if (msg.type === 'focusIde') {
+        // Unity just showed the inspector mirror window and stole the focus
+        focusWindow(s.win);
+        return;
+      }
       if (msg.type === 'open' && msg.file) {
         focusWindow(s.win);
         send('app:goto', { file: path.resolve(s.project, msg.file), line: Math.max(1, msg.line || 1), column: Math.max(1, msg.column || 1) });
@@ -394,6 +376,41 @@ ipcMain.on('unity:send', (e, cmd) => {
   const s = sessionFor(e.sender);
   if (s && s.unity) s.unity.send(cmd);
 });
+
+// The renderer reports the inspector area (CSS px in the page, or null); Unity gets it in screen
+// pixels together with this window's handle, and lays its real inspector window over it (Windows).
+ipcMain.on('unity:mirrorPlace', (e, rect) => {
+  const s = sessionFor(e.sender);
+  if (!s) return;
+  s.mirrorRect = rect;
+  placeUnityMirror(s);
+});
+
+function placeUnityMirror(s) {
+  if (process.platform !== 'win32' || !s.unity || !s.mirrorRect || s.win.isDestroyed()) return;
+  const win = s.win;
+  const r = s.mirrorRect;
+  const zoom = win.webContents.getZoomFactor();
+  const cb = win.getContentBounds();
+  const px = screen.dipToScreenRect(win, {
+    x: Math.round(cb.x + r.x * zoom),
+    y: Math.round(cb.y + r.y * zoom),
+    width: Math.round(r.width * zoom),
+    height: Math.round(r.height * zoom),
+  });
+  const h = win.getNativeWindowHandle();
+  const hwnd = h.length >= 8 ? Number(h.readBigUInt64LE(0)) : h.readUInt32LE(0);
+  s.unity.send({
+    type: 'inspector.mirrorPlace',
+    id: 0,
+    x: px.x,
+    y: px.y,
+    width: px.width,
+    height: px.height,
+    hwnd,
+    visible: !!r.visible && win.isVisible() && !win.isMinimized(),
+  });
+}
 
 ipcMain.handle('unity:ensureAnalyzers', async (e) => {
   const s = sessionFor(e.sender);

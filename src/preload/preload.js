@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('papyrus', {
     createFile: (p, text) => ipcRenderer.invoke('fs:createFile', { path: p, text }),
     createFolder: (p) => ipcRenderer.invoke('fs:createFolder', p),
     rename: (from, to) => ipcRenderer.invoke('fs:rename', { from, to }),
+    copy: (from, to) => ipcRenderer.invoke('fs:copy', { from, to }),
     trash: (p) => ipcRenderer.invoke('fs:trash', p),
     findInFiles: (root, query, opts) => ipcRenderer.invoke('fs:findInFiles', { root, query, opts }),
     onFindResult: on('fs:findResult'),
@@ -70,6 +71,7 @@ contextBridge.exposeInMainWorld('papyrus', {
   unity: {
     start: () => ipcRenderer.invoke('unity:start'),
     send: (cmd) => ipcRenderer.send('unity:send', cmd),
+    mirrorPlace: (rect) => ipcRenderer.send('unity:mirrorPlace', rect),
     installPackage: () => ipcRenderer.invoke('unity:installPackage'),
     ensureAnalyzers: () => ipcRenderer.invoke('unity:ensureAnalyzers'),
     onMessage: on('unity:message'),
