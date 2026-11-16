@@ -1,6 +1,7 @@
 // Explorer tool window: lazy file tree of the Unity project.
 import { monaco } from './monaco.js';
 import { isInspectable } from './inspector.js';
+import { fixScriptCopy, topLevelTypes, predefinedAssembly } from './script-copy.js';
 import { el, icon, basename, dirname, joinPath, fileIcon, contextMenu, prompt, toast, samePath, relPath, extname } from './ui.js';
 
 const ofs = window.papyrus.fs;
@@ -437,11 +438,9 @@ export class Explorer {
       return;
     }
     try {
-      // copy what the user sees: unsaved edits of the original go into the copy too
-      const tab = this.app.editors.findTab(path);
-      if (isCs && tab && tab.model) await ofs.createFile(to, tab.model.getValue());
+      if (isCs) await this.copyScript(path, to, { renameClass, oldClass, newClass });
       else await ofs.copy(path, to);
-      if (renameClass && oldClass !== newClass) await this.renameClassInCopy(to, oldClass, newClass);
+      if (isDir) await this.fixFolderCopy(path, to);
     } catch (err) {
       toast({ kind: 'error', title: '복사할 수 없어요', message: String(err.message || err) });
       return;
@@ -454,23 +453,96 @@ export class Explorer {
   }
 
   /**
-   * In the copied file only (never the original or its users): the type, its constructors and
-   * destructor, and every reference to it inside the file (Instance fields, Singleton<T>, nameof...).
+   * Writes the copy of a script so it compiles next to the original (only the copy is touched):
+   * - renamed copy: the file's main type (named like the file, else its only / component type) gets
+   *   the new name with every reference inside the file; the file's other top-level types (enums,
+   *   data classes, delegates) are left out, the original still declares them (no CS0101).
+   * - same name in another folder: the copy moves to that folder's namespace instead.
    */
-  async renameClassInCopy(file, oldName, newName) {
-    const text = (await ofs.readFile(file)).text || '';
-    const esc = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    if (!new RegExp(`\\b(?:class|struct|interface|enum|record)\\s+${esc}\\b`).test(text)) {
-      toast({ kind: 'warn', title: '클래스 이름은 그대로 뒀어요', message: `이 파일에 '${oldName}' 클래스가 없어요. 이름이 겹치면 Unity가 컴파일하지 못해요.`, timeout: 5000 });
+  async copyScript(from, to, { renameClass, oldClass, newClass }) {
+    // copy what the user sees: unsaved edits of the original go into the copy too
+    const tab = this.app.editors.findTab(from);
+    const text = tab && tab.model ? tab.model.getValue() : (await ofs.readFile(from)).text || '';
+    const sameAsm = this.assemblyOf(dirname(from)) === this.assemblyOf(dirname(to));
+    if (renameClass && oldClass !== newClass) {
+      const r = fixScriptCopy(text, { fileClass: oldClass, newClass, dropOthers: sameAsm });
+      await ofs.createFile(to, r.text);
+      if (!r.main) toast({ kind: 'warn', title: '클래스 이름은 그대로 뒀어요', message: '이 파일에서 타입 선언을 찾지 못했어요.', timeout: 5000 });
+      else if (r.removed.length) {
+        toast({ title: '복사본에서 뺀 타입', message: `${r.removed.join(', ')} — 원본 파일에 그대로 있어서 복사본도 같이 써요 (이름이 겹치면 컴파일이 안 돼요).`, timeout: 6000 });
+      }
       return;
     }
-    // whole identifiers only: OldName2 or MyOldName stay as they are
-    const out = text.replace(new RegExp(`(?<![A-Za-z0-9_@])${esc}(?![A-Za-z0-9_])`, 'g'), newName);
-    await ofs.writeFile(file, out);
+    await ofs.createFile(to, text);
+    if (!sameAsm) return; // another assembly: the same names don't clash
+    const types = topLevelTypes(text);
+    if (!types.length) return;
+    const oldNs = (/^[ \t]*namespace\s+([\w.]+)\s*[;{]/m.exec(text) || [])[1] || '';
+    const newNs = samePath(dirname(from), dirname(to)) ? '' : await this.app.refactor.namespaceForDir(dirname(to));
+    if (newNs && newNs !== oldNs) {
+      await this.app.refactor.changeNamespace(to, oldNs, newNs, []);
+      toast({ title: '네임스페이스를 바꿨어요', message: `같은 이름의 타입이 겹치지 않게 복사본을 '${newNs}'(으)로 옮겼어요.`, timeout: 5000 });
+    } else {
+      toast({ kind: 'warn', title: '같은 이름의 타입이 두 개예요', message: `${types.map((t) => t.name).join(', ')} — 이름이나 네임스페이스를 바꾸기 전까지 Unity가 컴파일하지 못해요.`, timeout: 6000 });
+    }
+  }
+
+  /**
+   * A copied folder re-declares all its scripts' types. Copied .asmdef files get a new assembly name
+   * (two assemblies can't share one); scripts outside them go into the new folder's namespace.
+   */
+  async fixFolderCopy(from, to) {
+    const files = await ofs.listAllFiles(to);
+    const asmdefs = files.filter((f) => /\.asmdef$/i.test(f));
+    const taken = new Set();
+    for (const f of [...(this.app.fileIndex || []), ...asmdefs]) {
+      if (!/\.asmdef$/i.test(f)) continue;
+      try { taken.add(JSON.parse((await ofs.readFile(f)).text || '{}').name); } catch { /* broken asmdef */ }
+    }
+    for (const a of asmdefs) {
+      try {
+        const raw = (await ofs.readFile(a)).text || '{}';
+        const json = JSON.parse(raw.replace(/^﻿/, ''));
+        if (!json.name) continue;
+        const stem = json.name.replace(/\d+$/, '');
+        let i = 1;
+        while (taken.has(`${stem}${i}`)) i++;
+        json.name = `${stem}${i}`;
+        taken.add(json.name);
+        await ofs.writeFile(a, JSON.stringify(json, null, 4) + '\n');
+      } catch { /* leave it as it is */ }
+    }
+    if (this.assemblyOf(dirname(from)) !== this.assemblyOf(dirname(to))) return;
+    const ownAsm = (f) => asmdefs.some((a) => (f.toLowerCase()).startsWith(dirname(a).toLowerCase() + '\\'));
+    const scripts = files.filter((f) => /\.cs$/i.test(f) && !ownAsm(f));
+    if (!scripts.length) return;
+    const newNs = await this.app.refactor.namespaceForDir(to);
+    let moved = 0;
+    for (const f of scripts) {
+      const text = (await ofs.readFile(f)).text || '';
+      if (!topLevelTypes(text).length) continue;
+      const oldNs = (/^[ \t]*namespace\s+([\w.]+)\s*[;{]/m.exec(text) || [])[1] || '';
+      if (!newNs || oldNs === newNs) continue;
+      await this.app.refactor.changeNamespace(f, oldNs, newNs, []);
+      moved++;
+    }
+    if (moved) toast({ title: '네임스페이스를 바꿨어요', message: `복사한 스크립트 ${moved}개를 '${newNs}'(으)로 옮겨서 원본과 이름이 겹치지 않아요.`, timeout: 5000 });
+  }
+
+  /** The assembly a folder's scripts compile into: nearest .asmdef/.asmref, else Unity's predefined ones. */
+  assemblyOf(dir) {
+    const d = dir.toLowerCase() + '\\';
+    let best = null;
+    for (const f of this.app.fileIndex || []) {
+      if (!/\.asm(def|ref)$/i.test(f)) continue;
+      const ad = dirname(f).toLowerCase() + '\\';
+      if (d.startsWith(ad) && (!best || ad.length > best.length)) best = ad;
+    }
+    return best || predefinedAssembly(relPath(this.app.project, dir));
   }
 
   /** Cut + paste: move the file with its .meta (Unity keeps the GUID, so references survive). */
-  async moveTo(path, dir) {
+  async moveTo(path, dir, { offerNamespace = true } = {}) {
     if (samePath(dirname(path), dir)) return;
     let name = basename(path);
     if (await ofs.exists(joinPath(dir, name))) {
@@ -495,6 +567,13 @@ export class Explorer {
     await this.refresh([path, to]);
     this.select(to);
     this.app.unityRefreshSoon();
+    if (offerNamespace) {
+      const isDir = !!((await ofs.stat(to)) || {}).dir;
+      const scripts = isDir ? (await ofs.listAllFiles(to)).filter((f) => /\.cs$/i.test(f)) : /\.cs$/i.test(to) ? [to] : [];
+      // where each script was before the move
+      const fromDirOf = (f) => dirname(isDir ? path + f.slice(to.length) : path);
+      if (scripts.length) this.offerNamespaceFix(scripts.slice(0, 500), fromDirOf).catch(() => {});
+    }
   }
 
   menu(path, isDir, x, y) {
@@ -529,6 +608,7 @@ export class Explorer {
       '-',
       { label: '이름 바꾸기…', icon: 'edit', key: 'F2', disabled: samePath(path, this.root), action: () => this.rename(path) },
       { label: '삭제', icon: 'trash', key: 'Delete', disabled: samePath(path, this.root), action: () => this.remove(path) },
+      ...(isDir || ext === '.cs' ? [{ label: '네임스페이스를 폴더에 맞추기…', icon: 'symbol-namespace', action: () => this.adjustNamespaces(path, isDir) }] : []),
       '-',
       { label: '경로 복사', icon: 'link', action: () => navigator.clipboard.writeText(path) },
       { label: '파일 탐색기에서 열기', icon: 'folder-opened', action: () => window.papyrus.app.reveal(path) },
@@ -546,8 +626,37 @@ export class Explorer {
     ]);
   }
 
-  guessNamespace(dir) {
-    // Use the nearest asmdef's rootNamespace if any; otherwise none (Unity default).
+  /** Scripts in a folder (and below) or the one script, through the namespace dialog. */
+  async adjustNamespaces(path, isDir) {
+    const files = isDir ? (await ofs.listAllFiles(path)).filter((f) => /\.cs$/i.test(f)) : [path];
+    await this.app.refactor.adjustNamespaces(files);
+  }
+
+  /** Scripts that followed their folder's namespace before a move: offer to follow the new folder. */
+  async offerNamespaceFix(scripts, fromDirOf) {
+    const follow = [];
+    for (const f of scripts) {
+      const text = (await ofs.readFile(f)).text || '';
+      const ns = (/^[ \t]*namespace\s+([\w.]+)\s*[;{]/m.exec(text) || [])[1] || '';
+      if (!topLevelTypes(text).length) continue;
+      const was = await this.app.refactor.namespaceForDir(fromDirOf(f));
+      const now = await this.app.refactor.namespaceForDir(dirname(f));
+      if (ns && ns === was && now !== was) follow.push(f);
+    }
+    if (!follow.length) return;
+    toast({
+      title: '네임스페이스도 옮길까요?',
+      message: follow.length === 1 ? `${basename(follow[0])}의 네임스페이스가 예전 폴더 기준이에요.` : `스크립트 ${follow.length}개의 네임스페이스가 예전 폴더 기준이에요.`,
+      actions: [{ label: '폴더에 맞추기', action: () => this.app.refactor.adjustNamespaces(follow) }],
+      timeout: 12000,
+    });
+  }
+
+  async guessNamespace(dir) {
+    // like the scripts around (folder namespaces in Rider style, one shared namespace, or none),
+    // else the nearest asmdef's rootNamespace (Unity default)
+    const s = await this.app.refactor.suggestNamespace(dir).catch(() => undefined);
+    if (s !== undefined) return s;
     return this.app.rootNamespaceFor ? this.app.rootNamespaceFor(dir) : '';
   }
 

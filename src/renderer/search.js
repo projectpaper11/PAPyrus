@@ -11,6 +11,47 @@ const TABS = [
   { id: 'actions', label: '명령' },
 ];
 const TYPE_KINDS = new Set([5, 10, 11, 23, 26]);
+// third-party code (Assets/Plugins, any .../Plugins/, package caches): only when nothing else matches
+// (the folders are the search.excludeFolders setting: Plugins, asset store packages...)
+const ALWAYS_EXTERNAL = /(^|[\\/])PackageCache[\\/]|^Library[\\/]/i;
+
+/** rel path (project-relative) -> true when it lies in an excluded third-party folder. */
+function externalTest(list) {
+  const names = new Set();
+  const paths = [];
+  for (const e of list || []) {
+    const s = String(e || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
+    if (!s) continue;
+    if (s.includes('/')) paths.push(s); else names.add(s);
+  }
+  return (rel) => {
+    const r = rel.replace(/\\/g, '/').toLowerCase();
+    if (ALWAYS_EXTERNAL.test(r)) return true;
+    const dirs = r.split('/').slice(0, -1);
+    return dirs.some((d) => names.has(d)) || paths.some((x) => r.startsWith(x + '/'));
+  };
+}
+
+/** Drops external paths unless they're all there is. */
+function preferProject(items, root, isExternal) {
+  const own = items.filter((it) => !it.path || !isExternal(relPath(root, it.path)));
+  return own.length ? own : items;
+}
+
+/**
+ * Closeness to the folder being worked in: same folder 6, below it 5..3, then -2 per folder up.
+ * Fuzzy scores are ~5-8 per matched letter, so this only reorders similarly good matches.
+ */
+function nearBonus(path, base) {
+  if (!base || !path) return 0;
+  const a = base.toLowerCase().split(/[\\/]+/).filter(Boolean);
+  const b = dirname(path).toLowerCase().split(/[\\/]+/).filter(Boolean);
+  let shared = 0;
+  while (shared < a.length && shared < b.length && a[shared] === b[shared]) shared++;
+  const up = a.length - shared;
+  if (up === 0) return b.length === a.length ? 6 : Math.max(3, 6 - (b.length - a.length));
+  return Math.max(0, 5 - 2 * up);
+}
 
 export class SearchEverywhere {
   constructor(app) {
@@ -20,6 +61,7 @@ export class SearchEverywhere {
     this.index = 0;
     this.tab = 'all';
     this.symbolSeq = 0;
+    this.isExternal = externalTest(['Plugins']); // replaced from the settings on open()
     this.searchSymbols = debounce((q) => this.loadSymbols(q), 120);
   }
 
@@ -39,7 +81,11 @@ export class SearchEverywhere {
     this.tab = tab;
     this.recentMode = tab === 'recent';
     if (this.recentMode) this.tab = 'files';
-    const sel = this.app.editors.editor.getModel() ? this.app.editors.editor.getModel().getValueInRange(this.app.editors.editor.getSelection()) : '';
+    // results near the file being worked on rank first (the open file, else the explorer selection)
+    const cur = (this.app.editors.active && this.app.editors.active.path) || this.app.explorer.selected;
+    this.baseDir = cur ? (this.app.explorer.isDir(cur) ? cur : dirname(cur)) : null;
+    this.isExternal = externalTest(this.app.settings['search.excludeFolders']);
+    const sel =this.app.editors.editor.getModel() ? this.app.editors.editor.getModel().getValueInRange(this.app.editors.editor.getSelection()) : '';
     this.input = el('input', { placeholder: this.recentMode ? '최근 파일' : '파일, 타입, 심볼, 명령 검색', spellcheck: 'false' });
     this.input.value = initial != null ? initial : sel && !sel.includes('\n') ? sel : (this.lastQuery || '');
     this.tabsEl = el('div.se-tabs');
@@ -122,11 +168,12 @@ export class SearchEverywhere {
       let score = f.score;
       if (/\.cs$/i.test(name)) score += 2;
       if (/[\\/]Assets[\\/]/.test(p)) score += 1;
+      score += nearBonus(p, this.baseDir);
       out.push({ type: 'file', path: p, name, positions: onPath ? [] : f.positions, score, line });
     }
     if (this.recentMode && !q) return out.reverse();
     out.sort((a, b) => b.score - a.score);
-    return out.slice(0, 60);
+    return (this.recentMode ? out : preferProject(out, root, this.isExternal)).slice(0, 60);
   }
 
   actionItems(q) {
@@ -149,10 +196,13 @@ export class SearchEverywhere {
     }
     const res = await this.app.lsp.workspaceSymbols(q);
     if (seq !== this.symbolSeq || !this.popup) return;
-    this.symbols = res.filter((s) => {
+    const withSource = res.filter((s) => {
       const p = s.location && s.location.uri ? cv.uriToPath(s.location.uri) : null;
       return p; // only symbols with a source location (skip metadata)
-    }).slice(0, 200);
+    });
+    // project symbols before Plugins ones, so plugins can't push them out of the 200
+    const ext = (s) => this.isExternal(relPath(this.app.project, cv.uriToPath(s.location.uri)));
+    this.symbols = [...withSource.filter((s) => !ext(s)), ...withSource.filter(ext)].slice(0, 200);
     this.compose();
   }
 
@@ -170,20 +220,21 @@ export class SearchEverywhere {
     const symItems = (filter) => (this.symbols || []).filter(filter).map((s) => {
       const f = fuzzy(q, s.name) || { score: 0, positions: [] };
       const p = cv.uriToPath(s.location.uri);
-      return { type: 'symbol', sym: s, name: s.name, positions: f.positions, score: f.score + (TYPE_KINDS.has(s.kind) ? 3 : 0), path: p };
+      return { type: 'symbol', sym: s, name: s.name, positions: f.positions, score: f.score + (TYPE_KINDS.has(s.kind) ? 3 : 0) + nearBonus(p, this.baseDir), path: p };
     }).sort((a, b) => b.score - a.score);
+    const own = (filter) => preferProject(symItems(filter), this.app.project, this.isExternal);
     if (this.recentMode) groups.push(['', this.fileItems(q)]);
     else if (this.tab === 'files') groups.push(['', this.fileItems(q)]);
     else if (this.tab === 'actions') groups.push(['', this.actionItems(q)]);
-    else if (this.tab === 'types') groups.push(['', symItems((s) => TYPE_KINDS.has(s.kind)).slice(0, 60)]);
-    else if (this.tab === 'symbols') groups.push(['', symItems(() => true).slice(0, 80)]);
+    else if (this.tab === 'types') groups.push(['', own((s) => TYPE_KINDS.has(s.kind)).slice(0, 60)]);
+    else if (this.tab === 'symbols') groups.push(['', own(() => true).slice(0, 80)]);
     else {
       if (!q) {
         groups.push(['최근 파일', this.app.recentFiles.slice(0, 12).map((p) => ({ type: 'file', path: p, name: basename(p), positions: [] }))]);
       } else {
-        groups.push(['타입', symItems((s) => TYPE_KINDS.has(s.kind)).slice(0, 8)]);
+        groups.push(['타입', own((s) => TYPE_KINDS.has(s.kind)).slice(0, 8)]);
         groups.push(['파일', this.fileItems(q).slice(0, 10)]);
-        groups.push(['심볼', symItems((s) => !TYPE_KINDS.has(s.kind)).slice(0, 10)]);
+        groups.push(['심볼', own((s) => !TYPE_KINDS.has(s.kind)).slice(0, 10)]);
         groups.push(['명령', this.actionItems(q).slice(0, 5)]);
       }
     }

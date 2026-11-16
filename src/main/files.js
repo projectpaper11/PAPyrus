@@ -84,7 +84,8 @@ async function walk(root, onFile, opts = {}) {
   let count = 0;
   const stack = [root];
   while (stack.length) {
-    const dir = stack.pop();
+    // opts.bfs: a folder's own files first, then its subfolders level by level
+    const dir = opts.bfs ? stack.shift() : stack.pop();
     let entries;
     try {
       entries = await fsp.readdir(dir, { withFileTypes: true });
@@ -96,6 +97,7 @@ async function walk(root, onFile, opts = {}) {
       const p = path.join(dir, d.name);
       if (d.isDirectory()) {
         if (ex.has(d.name) || d.name.startsWith('.')) continue;
+        if (opts.skipDir && opts.skipDir(p, d.name)) continue;
         stack.push(p);
       } else if (d.isFile()) {
         if (++count > max) return;
@@ -116,6 +118,23 @@ const TEXT_EXT = new Set(['.cs', '.shader', '.hlsl', '.cginc', '.compute', '.gls
   '.uxml', '.uss', '.md', '.yaml', '.yml', '.csproj', '.sln', '.rsp', '.js', '.ts', '.lua', '.py', '.ini', '.cfg', '.html', '.css',
   '.shadergraph', '.shadersubgraph', '.inputactions', '.editorconfig']);
 
+/** (dirPath, dirName) => true for a folder listed in search.excludeFolders (a name, or a project path). */
+function externalMatcher(root, list) {
+  const names = new Set();
+  const paths = [];
+  for (const e of list) {
+    const s = String(e || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
+    if (!s) continue;
+    if (s.includes('/')) paths.push(s); else names.add(s);
+  }
+  return (p, name) => {
+    if (names.has(name.toLowerCase())) return true;
+    if (!paths.length) return false;
+    const rel = path.relative(root, p).replace(/\\/g, '/').toLowerCase();
+    return paths.some((x) => rel === x || rel.startsWith(x + '/'));
+  };
+}
+
 let activeSearch = 0;
 async function findInFiles(root, query, opts, onResult) {
   const id = ++activeSearch;
@@ -129,10 +148,13 @@ async function findInFiles(root, query, opts, onResult) {
   }
   let count = 0;
   const limit = 2000;
-  await walk(root, async (p) => {
-    if (id !== activeSearch) return false;
+  let stopped = false;
+  const onFile = async (p) => {
+    if (id !== activeSearch) { stopped = true; return false; }
     const ext = path.extname(p).toLowerCase();
     if (!TEXT_EXT.has(ext)) return true;
+    // Unity-generated project files only list paths (of the plugins too): with the externals only
+    if (!opts.includePlugins && (ext === '.csproj' || ext === '.sln')) return true;
     let st;
     try { st = await fsp.stat(p); } catch { return true; }
     if (st.size > 2 * 1024 * 1024) return true;
@@ -151,8 +173,23 @@ async function findInFiles(root, query, opts, onResult) {
       if (count >= limit) break;
     }
     if (matches.length) onResult({ file: p, matches });
-    return count < limit;
-  });
+    if (count >= limit) stopped = true;
+    return !stopped;
+  };
+  // third-party folders (search.excludeFolders: Plugins, asset store packages) only when asked for
+  const external = opts.includePlugins ? () => false : externalMatcher(root, settings.get('search.excludeFolders') || []);
+  // Start in the current file's folder and widen one parent at a time: nearby results come first.
+  const norm = (p) => path.resolve(p).toLowerCase();
+  const rootN = norm(root);
+  let from = opts.from && norm(opts.from).startsWith(rootN) ? path.resolve(opts.from) : path.resolve(root);
+  let done = null; // the folder already searched
+  for (;;) {
+    const skip = done;
+    await walk(from, onFile, { bfs: true, skipDir: (p, name) => external(p, name) || (skip && norm(p) === norm(skip)) });
+    if (stopped || norm(from) === rootN) break;
+    done = from;
+    from = path.dirname(from);
+  }
   return { count, truncated: count >= limit };
 }
 

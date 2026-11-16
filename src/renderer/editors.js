@@ -2,6 +2,7 @@
 import { monaco } from './monaco.js';
 import { el, icon, basename, dirname, extname, fileIcon, contextMenu, toast, relPath, samePath } from './ui.js';
 import * as cv from './conv.js';
+import { allmanEnter } from './brace-enter.js';
 
 const ofs = window.papyrus.fs;
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.webp']);
@@ -82,7 +83,7 @@ export class Editors {
       },
       parameterHints: { enabled: true, cycle: true },
       formatOnType: s['editor.formatOnType'] !== false,
-      formatOnPaste: false,
+      formatOnPaste: s['editor.formatOnPaste'] !== false, // Roslyn range formatting: pasted blocks get indented and Allman braces
       autoClosingBrackets: 'languageDefined',
       autoClosingQuotes: 'languageDefined',
       autoSurround: 'languageDefined',
@@ -120,6 +121,9 @@ export class Editors {
     this.editor.onDidChangeModelLanguageConfiguration(() => this.app.updateStatus());
     // Tab completes while the suggest list is open (added later, so it wins over Monaco's own Tab).
     this.editor.addCommand(monaco.KeyCode.Tab, () => this.acceptSuggestionWithTab(), 'suggestWidgetVisible && textInputFocus');
+    // Enter after `{` in C#: the brace on its own line and the block opened (brace-enter.js)
+    this.editor.addCommand(monaco.KeyCode.Enter, () => this.braceEnter(),
+      'editorTextFocus && !editorReadonly && !suggestWidgetVisible && editorLangId == csharp');
 
     // Let Monaco navigation (Ctrl+click, F12, peek "open") route through our tabs.
     monaco.editor.registerEditorOpener({
@@ -178,6 +182,29 @@ export class Editors {
     const timer = setTimeout(() => finish(false), 1500);
   }
 
+  braceEnter() {
+    const ed = this.editor;
+    const model = ed.getModel();
+    const plain = () => ed.trigger('keyboard', 'type', { text: '\n' }); // Monaco's own Enter
+    const sels = ed.getSelections() || [];
+    if (!model || sels.length !== 1 || !sels[0].isEmpty() || this.app.settings['editor.allmanBraces'] === false) return plain();
+    const pos = sels[0].getPosition();
+    const line = model.getLineContent(pos.lineNumber);
+    const o = model.getOptions();
+    const unit = o.insertSpaces ? ' '.repeat(o.indentSize || o.tabSize) : '\t';
+    const r = allmanEnter(line.slice(0, pos.column - 1), line.slice(pos.column - 1), unit);
+    if (!r) return plain();
+    const ln = pos.lineNumber + r.caretLine;
+    ed.pushUndoStop();
+    ed.executeEdits('papyrus.braceEnter', [{
+      range: new monaco.Range(pos.lineNumber, 1, pos.lineNumber, line.length + 1),
+      text: r.lines.join(model.getEOL()),
+      forceMoveMarkers: true,
+    }], [new monaco.Selection(ln, r.caretColumn, ln, r.caretColumn)]);
+    ed.pushUndoStop();
+    ed.revealPosition({ lineNumber: ln, column: r.caretColumn });
+  }
+
   async remeasureFonts(s) {
     const font = `${s['editor.fontSize']}px ${s['editor.fontFamily']}`;
     try {
@@ -193,6 +220,7 @@ export class Editors {
       fontLigatures: !!s['editor.fontLigatures'],
       renderWhitespace: s['editor.renderWhitespace'] || 'none',
       formatOnType: s['editor.formatOnType'] !== false,
+      formatOnPaste: s['editor.formatOnPaste'] !== false,
       stickyScroll: { enabled: s['editor.stickyScroll'] !== false, maxLineCount: 4 },
       tabSize: s['editor.tabSize'],
       insertSpaces: s['editor.insertSpaces'],
