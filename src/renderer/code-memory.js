@@ -154,6 +154,8 @@ export class CodeMemory {
   attach(editor) {
     editor.onDidChangeModelContent((e) => {
       if (e.isFlush || e.isUndoing || e.isRedoing || !this.enabled()) return;
+      // the same file in two splits fires this in both editors: learn only where it was typed
+      if (!editor.hasTextFocus()) return;
       const model = editor.getModel();
       if (!model) return;
       for (const c of e.changes) {

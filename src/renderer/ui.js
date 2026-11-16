@@ -109,8 +109,15 @@ export function contextMenu(x, y, items) {
   for (const it of items) {
     if (it === '-') { m.append(el('div.menu-sep')); continue; }
     if (!it) continue;
-    const row = el('div.menu-item' + (it.disabled ? '.disabled' : ''), {
+    const row = el('div.menu-item' + (it.disabled ? '.disabled' : '') + (it.dim ? '.dim' : ''), {
+      title: it.title || '',
       onclick: () => { closeMenu(); it.action && it.action(); },
+      // an item's own right-click menu (e.g. a recent project: remove from the list)
+      oncontextmenu: (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (it.onContext) it.onContext(e.clientX, e.clientY);
+      },
     }, it.icon ? icon(it.icon) : el('span', { style: { width: '16px' } }), it.label, it.key ? el('span.mk', null, it.key) : null);
     m.append(row);
   }

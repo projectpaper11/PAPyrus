@@ -24,6 +24,13 @@ const MODIFIERS = new Set(['public', 'private', 'protected', 'internal', 'static
 const IDENT = /^@?[A-Za-z_][A-Za-z0-9_]*$/;
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Packages/, Plugins/, ThirdParty/...: library code whose namespaces bulk refactorings must not rewrite. */
+export function isThirdPartyPath(rel) {
+  const r = String(rel || '').replace(/\\/g, '/');
+  if (!/^Assets\//i.test(r)) return true; // Packages, Library, anything outside Assets
+  return /(^|\/)(Plugins|Third[ _-]?Party|External|Vendor|TextMesh Pro|Samples)(\/|$)/i.test(r);
+}
+
 // ====================================================================== text helpers
 
 function lineStarts(text) {
@@ -928,11 +935,15 @@ export class Refactorings {
 
   /** rootNamespace of the nearest .asmdef (if any) + the folders below it (below Assets/Scripts otherwise). */
   async namespaceForDir(dir) {
+    // compare paths in one form ("c:/a/b"): fileIndex, listAllFiles and the project path don't
+    // always agree on slashes / drive letter case
+    const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const under = (p, base) => norm(p) === norm(base) || norm(p).startsWith(norm(base) + '/');
     const asmdefs = (this.app.fileIndex || []).filter((f) => /\.asmdef$/i.test(f));
     let best = null;
     for (const a of asmdefs) {
       const ad = dirname(a);
-      if ((dir.toLowerCase() + '\\').startsWith(ad.toLowerCase() + '\\') && (!best || ad.length > dirname(best).length)) best = a;
+      if (under(dir, ad) && (!best || norm(ad).length > norm(dirname(best)).length)) best = a;
     }
     let root = '';
     let base = joinPath(this.app.project, 'Assets');
@@ -940,7 +951,9 @@ export class Refactorings {
       base = dirname(best);
       try { root = JSON.parse((await ofs.readFile(best)).text || '{}').rootNamespace || ''; } catch { /* none */ }
     }
-    let rel = relPath(base, dir).replace(/\\/g, '/');
+    // outside Assets / the asmdef: no folder-based name (an absolute path made "C_.Develop.….Assets…")
+    if (!under(dir, base)) return null;
+    let rel = norm(dir) === norm(base) ? '' : dir.replace(/\\/g, '/').slice(norm(base).length + 1);
     if (!best) rel = rel.replace(/^Scripts(\/|$)/i, '');
     // like Rider: "00.Scripts" -> "_00.Scripts", "TextMesh Pro" -> "TextMesh_Pro"
     const parts = rel.split('/').filter((s) => s && s !== '.' && s !== '..')
@@ -1164,7 +1177,7 @@ export class Refactorings {
         for (const f of sibs) {
           const ns = namespaceInfo(await this.textOf(monaco.Uri.file(f).toString()));
           if (!ns) none++;
-          else if (ns.name === conv) return this.namespaceForDir(dir);
+          else if (ns.name === conv) return (await this.namespaceForDir(dir)) ?? undefined;
           else other.set(ns.name, (other.get(ns.name) || 0) + 1);
         }
         if (none === sibs.length) return '';
@@ -1194,33 +1207,48 @@ export class Refactorings {
   }
 
   /** Rider's "Adjust Namespaces": each script's namespace follows its folder, usings follow the types. */
-  async adjustNamespaces(paths, { title = '네임스페이스를 폴더에 맞추기' } = {}) {
+  async adjustNamespaces(paths, { title = '네임스페이스를 폴더에 맞추기', tickAll = paths.length === 1 } = {}) {
     if (!this.lsp.running) {
       toast({ kind: 'warn', title, message: 'C# 언어 서버가 준비된 뒤에 다시 시도하세요. (사용처에 using을 추가하려면 필요해요)', timeout: 4000 });
       return;
     }
     const plan = [];
+    let skipped = 0;
     for (const path of paths.filter((p) => /\.cs$/i.test(p))) {
+      // store assets / plugins keep their own namespaces (Feel, Text Animator, DOTween...): never touched
+      if (isThirdPartyPath(relPath(this.app.project, path))) { skipped++; continue; }
       const text = await this.textOf(monaco.Uri.file(path).toString());
       const types = topLevelTypes(text);
       if (!types.length || (text.match(/^[ \t]*namespace\s/gm) || []).length > 1) continue;
       const ns = namespaceInfo(text);
       const oldNs = ns ? ns.name : '';
       const newNs = await this.namespaceForDir(dirname(path));
-      if (oldNs !== newNs) plan.push({ path, text, types, oldNs, newNs, box: el('input', { type: 'checkbox', checked: true }) });
+      if (newNs == null || oldNs === newNs) continue;
+      // a whole folder at once: a script that already has a namespace ("MoreMountains.Feedbacks" in
+      // Assets/Feel/...) is listed but not ticked; it's most likely an asset store library's
+      const foreign = !tickAll && !!oldNs;
+      plan.push({ path, text, types, oldNs, newNs, foreign, box: el('input', { type: 'checkbox', checked: !foreign }) });
     }
-    if (!plan.length) { toast({ title, message: '모든 스크립트의 네임스페이스가 이미 폴더와 맞아요.', timeout: 3000 }); return; }
+    plan.sort((a, b) => a.foreign - b.foreign);
+    if (!plan.length) {
+      toast({ title, message: `모든 스크립트의 네임스페이스가 이미 폴더와 맞아요.${skipped ? ` (플러그인·외부 에셋 ${skipped}개는 건너뜀)` : ''}`, timeout: 3000 });
+      return;
+    }
 
     const { body, foot, close, result } = modal({ title, width: 640 });
     body.replaceChildren(
       el('div.rf-table', { style: { padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '320px' } },
         ...plan.map((p) => el('label.cd-check', { style: { alignItems: 'flex-start' } }, p.box, el('span', null,
           el('div', null, relPath(this.app.project, p.path)),
-          el('div.mono', { style: { fontSize: '11.5px', color: 'var(--fg-dim)' } }, `${p.oldNs || '(전역)'}  →  ${p.newNs || '(전역)'}`))))),
-      el('div.cd-note', null, icon('info'), el('span', null, '폴더 경로(와 asmdef의 rootNamespace)로 네임스페이스를 정해요. 이 타입들을 쓰는 파일에는 using을 추가하고, 더는 없는 네임스페이스의 using은 지워요.')));
-    const ok = el('button.btn.primary', { onclick: () => close(true) }, `바꾸기 (${plan.length})`);
-    plan.forEach((p) => p.box.addEventListener('change', () => { ok.textContent = `바꾸기 (${plan.filter((x) => x.box.checked).length})`; }));
-    foot.replaceChildren(el('button.btn', { onclick: () => close(null) }, '취소'), ok);
+          el('div.mono', { style: { fontSize: '11.5px', color: 'var(--fg-dim)' } }, `${p.oldNs || '(전역)'}  →  ${p.newNs || '(전역)'}`),
+          p.foreign ? el('div', { style: { fontSize: '11.5px', color: 'var(--warn-text, #d7a84a)' } }, '이미 네임스페이스가 있어서 기본으로 선택하지 않았어요 (외부 에셋일 수 있어요)') : null)))),
+      el('div.cd-note', null, icon('info'), el('span', null, `폴더 경로(와 asmdef의 rootNamespace)로 네임스페이스를 정해요. 이 타입들을 쓰는 파일에는 using을 추가하고, 더는 없는 네임스페이스의 using은 지워요.${skipped ? ` Plugins·외부 에셋 폴더의 스크립트 ${skipped}개는 건너뛰었어요.` : ''}`)));
+    const ok = el('button.btn.primary', { onclick: () => close(true) }, `바꾸기 (${plan.filter((x) => x.box.checked).length})`);
+    const recount = () => { ok.textContent = `바꾸기 (${plan.filter((x) => x.box.checked).length})`; ok.disabled = !plan.some((x) => x.box.checked); };
+    plan.forEach((p) => p.box.addEventListener('change', recount));
+    recount();
+    const all = el('button.btn', { style: { marginRight: 'auto' }, onclick: () => { const on = !plan.every((x) => x.box.checked); plan.forEach((x) => { x.box.checked = on; }); recount(); } }, '모두 선택/해제');
+    foot.replaceChildren(...(plan.length > 1 ? [all] : []), el('button.btn', { onclick: () => close(null) }, '취소'), ok);
     ok.focus();
     if (!(await result)) return;
     const todo = plan.filter((p) => p.box.checked);
@@ -1231,11 +1259,22 @@ export class Refactorings {
       const touched = new Set();
       for (const p of todo) {
         const uri = monaco.Uri.file(p.path).toString();
+        // re-read: an earlier script of this run may have added a using here, and the old text's
+        // offsets then pointed at another symbol (whose usages all got a wrong using)
+        const text = await this.textOf(uri);
+        const types = topLevelTypes(text);
         const users = new Set();
-        for (const t of p.types) {
-          const off = typeNameOffset(p.text, t);
+        for (const t of types) {
+          const off = typeNameOffset(text, t);
           if (off < 0) continue;
-          for (const l of await this.referencesAt(uri, off, false)) users.add(monaco.Uri.parse(String(l.uri)).toString());
+          const name = text.slice(off).match(/^\w+/)?.[0];
+          const word = name ? new RegExp(`\\b${name}\\b`) : null;
+          for (const l of await this.referencesAt(uri, off, false)) {
+            const u = monaco.Uri.parse(String(l.uri)).toString();
+            // only files that really name the type get a using
+            if (word && u !== uri && !word.test(await this.textOf(u))) continue;
+            users.add(u);
+          }
         }
         users.forEach((u) => touched.add(u));
         await this.changeNamespace(p.path, p.oldNs, p.newNs, [...users], before);

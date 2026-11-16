@@ -26,6 +26,7 @@ export const SCHEMA = [
       { key: 'editor.formatOnType', label: '입력하면서 서식 적용', type: 'bool', desc: '; 나 } 를 입력하면 해당 줄을 정리해요.' },
       { key: 'editor.formatOnPaste', label: '붙여넣을 때 서식 적용 (C#)', type: 'bool', desc: '붙여넣은 코드의 들여쓰기와 중괄호 위치를 정리해요.' },
       { key: 'editor.allmanBraces', label: '{ 뒤 Enter로 블록 펼치기', type: 'bool', desc: 'if () { 에서 Enter를 누르면 { 를 다음 줄로 내리고 블록을 열어요 (Rider 기본).' },
+      { key: 'editor.removeUnusedUsings', label: '안 쓰는 using 자동 정리 (C#)', type: 'select', options: [['auto', '바로 (방금 입력한 using은 저장할 때)'], ['onSave', '저장할 때'], ['off', '끄기']], desc: '쓰지 않는 using과 찾을 수 없는 네임스페이스의 using을 지워요. 직접 하려면 "using 정리" (Ctrl+Alt+O).' },
         { key: 'editor.learnedCompletions', label: '학습형 자동완성', type: 'bool', desc: '줄의 첫 단어를 입력할 때 자주 쓰는 줄을 제안하고, Unity 스니펫(sf, awake, dlog…)도 보여 줘요.' },
     ],
   },
@@ -43,6 +44,10 @@ export const SCHEMA = [
     id: 'unity', title: 'Unity', icon: 'game', items: [
       { key: 'unity.refreshOnSave', label: '저장하면 Unity 에셋 새로고침', type: 'bool', desc: 'Unity 창으로 돌아가기 전에 컴파일이 시작돼요.' },
       { key: 'unity.clearLogOnPlay', label: 'Play할 때 Unity Log 지우기', type: 'bool' },
+      { key: 'unity.assetLenses', label: '에셋 사용처 표시', type: 'bool', desc: '스크립트 클래스 위에 "프리팹 2 · 씬 1에서 사용", UnityEvent·애니메이션 이벤트로 불리는 메서드 위에 호출 위치를 보여 줘요.' },
+      { key: 'unity.formerlySerializedAs', label: '직렬화 필드 이름 바꿀 때 값 보존', type: 'bool', desc: '인스펙터에 저장된 필드의 이름을 바꾸면 [FormerlySerializedAs("이전 이름")]을 붙여서 값이 사라지지 않게 해요.' },
+      { key: 'unity.stringChecks', label: '태그·레이어·씬 이름 자동완성과 오타 경고', type: 'bool', desc: 'CompareTag, LayerMask, LoadScene, Animator.SetTrigger, Input.GetAxis, Resources.Load의 문자열을 프로젝트 설정에서 찾아 자동완성하고, 없는 이름이면 경고해요.' },
+      { key: 'unity.performanceHints', label: '성능 힌트', type: 'bool', desc: 'Update·LateUpdate·FixedUpdate·OnGUI에서 GetComponent, Find, SendMessage 같은 비싼 호출을 표시하고, 필드에 캐싱하는 빠른 수정(Ctrl+.)을 제안해요.' },
     ],
   },
   {
