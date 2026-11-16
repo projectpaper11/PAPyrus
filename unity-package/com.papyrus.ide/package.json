@@ -5,5 +5,5 @@
   "unity": "2021.3",
   "description": "PAPyrus를 External Script Editor로 등록합니다. SDK 스타일 .sln/.csproj 생성, 스크립트 더블클릭으로 열기, IDE에서 Unity 콘솔 로그 보기, Play/Stop/Pause, 에셋 새로고침을 지원합니다.",
   "author": { "name": "PAPyrus" },
-  "keywords": ["ide", "editor", "csharp", "rider"]
+  "keywords": ["ide", "editor", "csharp", "unity"]
 }

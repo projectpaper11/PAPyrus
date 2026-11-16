@@ -830,7 +830,8 @@ class App {
         el('div.ver', null, `버전 ${this.version || ''} · Electron ${this.electronVersion || ''}`),
         el('div.credits', null, 'Unity용 가벼운 C# IDE', el('br'),
           'Monaco Editor (MIT) · Roslyn Language Server (MIT)', el('br'),
-          'Microsoft.Unity.Analyzers (MIT) · JetBrains Mono / Inter (OFL)'),
+          'Microsoft.Unity.Analyzers (MIT) · JetBrains Mono / Inter (OFL)', el('br'),
+          'Codicons © Microsoft (CC BY 4.0)'),
         el('div.row', { style: { justifyContent: 'center' } },
           el('button.btn', { onclick: () => { back.remove(); this.updates.check(); } }, icon('cloud-download'), '업데이트 확인'),
           el('button.btn.primary', { onclick: () => back.remove() }, '닫기'))));
