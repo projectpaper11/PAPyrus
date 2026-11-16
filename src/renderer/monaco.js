@@ -157,6 +157,35 @@ const DARK_RULES = [
     { token: 'deprecated', fontStyle: 'strikethrough' },
 ];
 
+/**
+ * Roslyn's language server (non-Visual Studio client) names its own token types the VS Code way:
+ * field, controlKeyword (if/else/return/await...), extensionMethod, constant... The rules above
+ * only had the "field-name" / "keyword-control" spellings, so fields and control keywords stayed
+ * plain white. Every alias gets the style of the rule it stands for (camelCase and lowercase).
+ */
+const ROSLYN_ALIASES = {
+  field: 'field-name', controlKeyword: 'keyword-control', extensionMethod: 'extension-method-name',
+  constant: 'constant-name', delegate: 'delegate-name', recordClass: 'record-class-name', recordStruct: 'record-struct-name',
+  operatorOverloaded: 'method-name', local: 'variable', modifier: 'keyword', label: 'label-name',
+  excludedCode: 'excluded-code', preprocessorKeyword: 'preprocessor-keyword', preprocessorText: 'preprocessor-text',
+  stringEscapeCharacter: 'string-escape-character', stringVerbatim: 'string', regexText: 'string',
+  xmlDocCommentText: 'xml-doc-comment-text', xmlDocCommentName: 'xml-doc-comment-name',
+  xmlDocCommentDelimiter: 'xml-doc-comment-delimiter', xmlDocCommentAttributeName: 'xml-doc-comment-name',
+  xmlDocCommentAttributeQuotes: 'xml-doc-comment-delimiter', xmlDocCommentAttributeValue: 'string',
+  xmlDocCommentCDataSection: 'xml-doc-comment-text', xmlDocCommentComment: 'xml-doc-comment-text',
+  xmlDocCommentEntityReference: 'xml-doc-comment-text', xmlDocCommentProcessingInstruction: 'xml-doc-comment-text',
+};
+function addRoslynAliases(rules) {
+  const by = new Map(rules.map((r) => [r.token, r]));
+  for (const [alias, src] of Object.entries(ROSLYN_ALIASES)) {
+    const r = by.get(src);
+    if (!r) continue;
+    for (const name of new Set([alias, alias.toLowerCase()])) if (!by.has(name)) rules.push({ ...r, token: name });
+  }
+  return rules;
+}
+addRoslynAliases(DARK_RULES);
+
 const DARK_COLORS = {
     'editor.background': '#1E1F22',
     'editor.foreground': '#BDBDBD',
@@ -314,7 +343,7 @@ const L = {
 monaco.editor.defineTheme('papyrus-light', {
   base: 'vs',
   inherit: true,
-  rules: [
+  rules: addRoslynAliases([
     { token: '', foreground: L.text },
     { token: 'keyword', foreground: L.keyword },
     { token: 'keyword.directive', foreground: L.preproc },
@@ -369,7 +398,8 @@ monaco.editor.defineTheme('papyrus-light', {
     { token: 'xml-doc-comment-delimiter', foreground: '6A8759' },
     { token: 'static-symbol', fontStyle: 'italic' },
     { token: 'deprecated', fontStyle: 'strikethrough' },
-  ],
+    { token: 'label-name', foreground: L.text },
+  ]),
   colors: {
     'editor.background': '#FFFFFF',
     'editor.foreground': '#080808',

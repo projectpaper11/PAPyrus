@@ -16,6 +16,8 @@ const defaults = {
   'editor.renderWhitespace': 'none',
   'editor.stickyScroll': true,
   'editor.formatOnType': true,
+  'editor.formatOnPaste': true, // pasted code is formatted (Roslyn): indentation, braces on their own line
+  'editor.allmanBraces': true, // Enter after `{` moves it to its own line and opens the block, like Rider
   'editor.learnedCompletions': true,
   'editor.codeLens': true,
   'editor.fontSize': 13,
@@ -36,6 +38,9 @@ const defaults = {
   'explorer.hideProjectFiles': true,
   'explorer.renameClassWithFile': false, // remembered "rename the class too" checkbox of file rename
   'files.exclude': ['Library', 'Temp', 'Logs', 'obj', 'UserSettings', 'Build', 'Builds', '.git', '.vs', '.idea', '.vscode', 'MemoryCaptures'],
+  // third-party code left out of name search / find in files (still in the explorer). A folder name
+  // matches at any depth; "Assets/Some/Path" matches that path only.
+  'search.excludeFolders': ['Plugins', 'TextMesh Pro', 'Feel', 'DamageNumbersPro'],
   reopenLastProject: true,
 };
 

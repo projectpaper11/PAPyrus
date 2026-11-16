@@ -759,9 +759,20 @@ function convertCompletion(it, defaults, fallback, model) {
     range = te.range ? cv.toRange(te.range) : { insert: cv.toRange(te.insert), replace: cv.toRange(te.replace) };
   }
   // Monaco requires single-line ranges that contain the cursor line
-  const fmt = it.insertTextFormat != null ? it.insertTextFormat : defaults.insertTextFormat;
+  let fmt = it.insertTextFormat != null ? it.insertTextFormat : defaults.insertTextFormat;
   let commit = it.commitCharacters || defaults.commitCharacters;
   if (commit) commit = commit.filter((c) => c !== ' ');
+  // Methods complete with "()" and the caret between them (Rider), "new Foo" too
+  let command = it.command ? { id: 'papyrus.lsp.command', title: it.command.title || '', arguments: [it.command, model.uri.toString()] } : undefined;
+  const bare = /^@?\w+<>$/.test(text) ? text.slice(0, -2) : text; // "GetComponent<>" labels
+  const call = !command && fmt !== 2 && /^@?\w+$/.test(bare) && callParens(it, model, fallback);
+  if (call) {
+    text = bare;
+    text = call.generic ? `${text}<$1>($0)` : `${text}($0)`;
+    fmt = 2;
+    if (commit) commit = commit.filter((c) => c !== '(' && c !== '<');
+    command = { id: 'editor.action.triggerParameterHints', title: '' };
+  }
   const s = {
     label: it.labelDetails ? { label: it.label, detail: it.labelDetails.detail, description: it.labelDetails.description } : it.label,
     kind: cv.completionKind(it.kind),
@@ -778,8 +789,26 @@ function convertCompletion(it, defaults, fallback, model) {
     commitCharacters: commit,
     tags: it.deprecated || (it.tags && it.tags.includes(1)) ? [L.CompletionItemTag.Deprecated] : undefined,
     additionalTextEdits: it.additionalTextEdits ? it.additionalTextEdits.map((e) => ({ range: cv.toRange(e.range), text: e.newText })) : undefined,
-    command: it.command ? { id: 'papyrus.lsp.command', title: it.command.title || '', arguments: [it.command, model.uri.toString()] } : undefined,
+    command,
     __lsp: { ...it, data: it.data !== undefined ? it.data : defaults.data },
   };
   return s;
+}
+
+/**
+ * Whether a completion should insert "()" (and "<>" for generic methods like GetComponent<>):
+ * methods/functions, and types right after `new`. Not when parentheses already follow, nor where
+ * a method group is meant (nameof(...), += / -= handlers, AddListener(...)).
+ */
+function callParens(it, model, wordRange) {
+  const line = model.getLineContent(wordRange.startLineNumber);
+  const before = line.slice(0, wordRange.startColumn - 1);
+  const after = line.slice(wordRange.endColumn - 1).replace(/^\w*/, ''); // rest of the word under the caret
+  if (/^\s*[(<]/.test(after)) return null;
+  if (/\b(?:override|partial)\s+(?:[\w<>[\],.?]+\s+)*$/.test(before)) return null; // declaring, not calling
+  const method = it.kind === 2 || it.kind === 3; // Method, Function (extension methods are Method too)
+  const newType = (it.kind === 7 || it.kind === 22) && /\bnew\s+$/.test(before); // Class, Struct
+  if (!method && !newType) return null;
+  if (method && /(\bnameof\s*\(\s*|[+-]=\s*|\b(?:Add|Remove)Listener\s*\(\s*|\b(?:Start|Stop)Coroutine\s*\(\s*nameof\s*\(\s*)$/.test(before)) return null;
+  return { generic: /<>$/.test(it.label) || (it.labelDetails && /^<>/.test(it.labelDetails.detail || '')) };
 }

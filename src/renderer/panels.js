@@ -205,13 +205,14 @@ class UnityLogView {
     const view = list.slice(-1500);
     if (!this.logs.length) {
       const st = this.app.unityStatus || {};
-      const msg = st.state === 'connected'
-        ? 'Unity와 연결됐어요. 로그가 여기에 표시돼요.'
-        : st.packageInstalled
-          ? 'Unity가 열려 있지 않거나 아직 연결 전이에요. Unity에서 프로젝트를 열면 자동으로 연결돼요.'
-          : 'Unity 연동 패키지(com.papyrus.ide)가 이 프로젝트에 없어요.';
-      this.el.replaceChildren(el('div.empty-msg', null, msg,
-        !st.packageInstalled && st.isUnityProject !== false ? el('div', null, el('button.btn.primary', { onclick: () => this.app.installUnityPackage() }, icon('package'), 'Unity 패키지 설치')) : null));
+      // Connected: just an empty log. Only the "disconnected" status carries packageInstalled, so
+      // the install offer needs an explicit false (it used to show up while connected, too).
+      const missing = st.state !== 'connected' && st.packageInstalled === false && st.isUnityProject !== false;
+      const msg = st.state === 'connected' ? null
+        : missing ? 'Unity 연동 패키지(com.papyrus.ide)가 이 프로젝트에 없어요.'
+          : 'Unity가 열려 있지 않거나 아직 연결 전이에요. Unity에서 프로젝트를 열면 자동으로 연결돼요.';
+      this.el.replaceChildren(msg ? el('div.empty-msg', null, msg,
+        missing ? el('div', null, el('button.btn.primary', { onclick: () => this.app.installUnityPackage() }, icon('package'), 'Unity 패키지 설치')) : null) : '');
       this.panels.refreshActions();
       return;
     }
@@ -316,7 +317,7 @@ class FindView {
     this.app = app;
     this.panels = panels;
     this.title = '찾기';
-    this.opts = { matchCase: false, wholeWord: false, regex: false };
+    this.opts = { matchCase: false, wholeWord: false, regex: false, includePlugins: false };
     this.results = [];
     this.header = '';
     this.input = el('input.filter-input', {
@@ -331,6 +332,7 @@ class FindView {
       this.optBtn('Aa', 'matchCase', '대소문자 구분'),
       this.optBtn('W', 'wholeWord', '단어 단위'),
       this.optBtn('.*', 'regex', '정규식'),
+      this.optBtn('외부', 'includePlugins', '외부 폴더(Plugins, Feel 등 설정 > 파일 > 검색에서 뺄 외부 폴더)도 찾기'),
       el('button.btn', { onclick: () => this.search(this.input.value) }, '찾기'));
     this.list = el('div.reslist');
     this.status = el('div.empty-msg', null, '검색어를 입력하고 Enter를 누르세요.');
@@ -356,7 +358,10 @@ class FindView {
     this.status.textContent = `'${q}' 찾는 중…`;
     this.mode = 'files';
     this.query = q;
-    const r = await window.papyrus.fs.findInFiles(this.app.project, q, this.opts);
+    // from the selected file's folder outward, so the nearby results come first
+    const cur = (this.app.editors.active && this.app.editors.active.path) || this.app.explorer.selected;
+    const from = cur ? (this.app.explorer.isDir(cur) ? cur : dirname(cur)) : null;
+    const r = await window.papyrus.fs.findInFiles(this.app.project, q, { ...this.opts, from });
     if (r.error) this.status.textContent = `정규식 오류: ${r.error}`;
     else this.status.textContent = r.count ? `'${q}' — ${r.count}개${r.truncated ? ' 이상' : ''} 일치, 파일 ${this.results.length}개` : `'${q}' — 결과 없음`;
   }

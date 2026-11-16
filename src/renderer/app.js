@@ -24,6 +24,7 @@ import { SetupWizard } from './setup-wizard.js';
 import { CodeMemory } from './code-memory.js';
 import './unity-completions.js';
 import { registerOverrideCompletion } from './override-completions.js';
+import { Refactorings } from './refactorings.js';
 import { showLocationPopup, popupPoint } from './location-popup.js';
 import { el, icon, basename, dirname, relPath, joinPath, contextMenu, toast, debounce, samePath, extname } from './ui.js';
 
@@ -76,6 +77,8 @@ class App {
     });
     this.codeMemory.attach(this.editors.editor);
     registerOverrideCompletion(this);
+    this.refactor = new Refactorings(this);
+    this.attachRefactorMenu(this.editors.editor);
     this.attachCtrlClickUsages(this.editors.editor);
     this.lsp.ensureModelHook = (uris) => this.editors.ensureModels(uris);
     this.lsp.isEditableModel = (m) => this.editors.tabs.some((t) => t.model === m);
@@ -740,6 +743,21 @@ class App {
     });
   }
 
+  /** "리팩터링" group in the editor's right-click menu (C# only; keys come from our keymap). */
+  attachRefactorMenu(editor) {
+    const isCs = 'editorLangId == csharp';
+    const add = (id, label, order, run) => editor.addAction({
+      id: 'papyrus.menu.' + id, label, precondition: isCs, contextMenuGroupId: '1_papyrus_refactor', contextMenuOrder: order, run,
+    });
+    add('refactorThis', '리팩터링…', 1, () => this.refactor.menu());
+    add('extractMethod', '메서드 추출…', 2, () => this.refactor.extractMethod());
+    add('changeSignature', '시그니처 변경…', 3, () => this.refactor.changeSignature());
+    add('moveType', '타입 이동…', 4, () => this.refactor.moveType());
+    add('safeDelete', '안전 삭제…', 5, () => this.refactor.safeDelete());
+    add('extractInterface', '인터페이스 추출…', 6, () => this.refactor.extractInterface());
+    add('adjustNamespaces', '네임스페이스를 폴더에 맞추기', 7, () => this.refactor.adjustCurrentNamespace());
+  }
+
   // Ctrl+click on a declaration shows its usages at the click point (Monaco's own fallback opens
   // the inline peek below the line; that's switched off in the editor options).
   attachCtrlClickUsages(editor) {
@@ -1124,6 +1142,14 @@ class App {
     M('editor.action.showHover', '호버(문서) 보기', 'Ctrl+K Ctrl+I', cat);
     M('editor.action.quickFix', '빠른 수정', 'Ctrl+.', cat);
     M('editor.action.rename', '이름 바꾸기', 'F2', cat);
+    // Rider-style refactorings (refactorings.js); Move is F6 in Rider, but F6 pauses Unity here
+    E('papyrus.refactorThis', '리팩터링 메뉴 (Refactor This)', 'Ctrl+Shift+R', () => this.refactor.menu(), cat);
+    E('papyrus.extractMethod', '메서드 추출', 'Ctrl+Alt+M', () => this.refactor.extractMethod(), cat);
+    E('papyrus.changeSignature', '시그니처 변경', 'Ctrl+F6', () => this.refactor.changeSignature(), cat);
+    E('papyrus.moveType', '타입 이동', 'Ctrl+Shift+Alt+M', () => this.refactor.moveType(), cat);
+    E('papyrus.safeDelete', '안전 삭제', 'Alt+Delete', () => this.refactor.safeDelete(), cat);
+    E('papyrus.extractInterface', '인터페이스 추출', null, () => this.refactor.extractInterface(), cat);
+    E('papyrus.adjustNamespaces', '네임스페이스를 폴더에 맞추기', null, () => this.refactor.adjustCurrentNamespace(), cat);
     E('papyrus.formatDocument', '문서 서식', 'Shift+Alt+F', () => this.editorAction('editor.action.formatDocument'), { monaco: 'editor.action.formatDocument', ...cat });
     M('editor.action.formatSelection', '선택 영역 서식', 'Ctrl+K Ctrl+F', cat);
     M('editor.action.commentLine', '줄 주석 토글', 'Ctrl+/', cat);
