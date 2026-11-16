@@ -1,0 +1,689 @@
+// Renderer side of the C# language server: document sync, diagnostics and Monaco providers.
+import { monaco } from './monaco.js';
+import * as cv from './conv.js';
+
+const api = window.papyrus.lsp;
+let reqSeq = 1;
+
+export class LspClient {
+  constructor({ onStatus, onApplyEdit, onCommand, onShowDocument, onMessage }) {
+    this.status = { state: 'stopped' };
+    this.caps = null;
+    this.kind = null;
+    this.docs = new Map(); // uri -> { model, version, sub }
+    this.diagRegs = new Map(); // registration id -> identifier
+    this.pullResults = new Map(); // uri -> Map(identifier -> {resultId, items})
+    this.lastDiagnostics = new Map(); // uri -> lsp diagnostics (all identifiers merged)
+    this.providers = [];
+    this.onStatus = onStatus;
+    this.onApplyEdit = onApplyEdit;
+    this.onCommand = onCommand;
+    this.onShowDocument = onShowDocument;
+    this.onMessage = onMessage;
+    this.pullTimers = new Map();
+    this.ready = false;
+
+    api.onStatus((st) => this.handleStatus(st));
+    api.onNotification(({ method, params }) => this.handleNotification(method, params));
+  }
+
+  get running() {
+    return ['loading', 'ready', 'restoring'].includes(this.status.state) && !!this.caps;
+  }
+
+  async start() {
+    this.caps = null;
+    this.ready = false;
+    this.diagRegs.clear();
+    const res = await api.start();
+    if (res && res.ok) {
+      this.caps = res.capabilities || {};
+      this.kind = res.kind;
+      this.registerProviders();
+      for (const d of this.docs.values()) this.sendOpen(d);
+      this.pullAll();
+    }
+    return res;
+  }
+
+  async stop() {
+    this.caps = null;
+    this.disposeProviders();
+    await api.stop();
+  }
+
+  handleStatus(st) {
+    this.status = st;
+    if (st.state === 'ready' && !this.ready) {
+      this.ready = true;
+      setTimeout(() => this.pullAll(), 300);
+    }
+    if (st.state === 'error' || st.state === 'stopped') this.ready = false;
+    this.onStatus && this.onStatus(st);
+  }
+
+  handleNotification(method, params) {
+    switch (method) {
+      case 'textDocument/publishDiagnostics': {
+        const d = this.docs.get(normUri(params.uri));
+        this.lastDiagnostics.set(normUri(params.uri), params.diagnostics || []);
+        const model = d ? d.model : monaco.editor.getModel(monaco.Uri.parse(params.uri));
+        if (model) monaco.editor.setModelMarkers(model, 'lsp', (params.diagnostics || []).filter(cv.visibleDiagnostic).map(cv.toMarker));
+        break;
+      }
+      case '$papyrus/registerCapability':
+        for (const r of params.registrations || []) {
+          if (r.method === 'textDocument/diagnostic') {
+            this.diagRegs.set(r.id, (r.registerOptions && r.registerOptions.identifier) || '');
+            setTimeout(() => this.pullAll(), 50);
+          }
+        }
+        break;
+      case '$papyrus/unregisterCapability':
+        for (const r of params.unregisterations || params.unregistrations || []) this.diagRegs.delete(r.id);
+        break;
+      case 'workspace/diagnostic/refresh':
+      case 'workspace/projectInitializationComplete':
+        this.pullAll();
+        if (method === 'workspace/projectInitializationComplete') this.refreshSemantic();
+        break;
+      case 'workspace/semanticTokens/refresh':
+        this.refreshSemantic();
+        break;
+      case 'workspace/inlayHint/refresh':
+        this.inlayEmitter && this.inlayEmitter.fire();
+        break;
+      case 'workspace/codeLens/refresh':
+        this.codeLensEmitter && this.codeLensEmitter.fire(this.codeLensProvider);
+        break;
+      case '$papyrus/applyEdit':
+        this.onApplyEdit && this.onApplyEdit(params.edit);
+        break;
+      case '$papyrus/showDocument':
+        this.onShowDocument && this.onShowDocument(params);
+        break;
+      case 'window/showMessage':
+        this.onMessage && this.onMessage(params);
+        break;
+      default:
+        break;
+    }
+  }
+
+  // ------------------------------------------------------------------ requests
+  request(method, params, token) {
+    return this.send(method, params, token).then((r) => (r.error ? null : r.result));
+  }
+
+  // Like request() but retries when the server answers ContentModified (the document changed
+  // while it was working, e.g. fast typing). Used for completion so results are never dropped.
+  async requestRetry(method, params, token, retries = 3) {
+    for (let i = 0; ; i++) {
+      const r = await this.send(method, params, token);
+      if (!r.error) return r.result;
+      if (r.error.code !== -32801 || i >= retries || (token && token.isCancellationRequested)) return null;
+      await new Promise((res) => setTimeout(res, 40));
+      if (token && token.isCancellationRequested) return null;
+    }
+  }
+
+  send(method, params, token) {
+    if (!this.caps) return Promise.resolve({ error: { message: 'not running' } });
+    const id = reqSeq++;
+    let sub = null;
+    if (token) {
+      if (token.isCancellationRequested) return Promise.resolve({ error: { message: 'cancelled', code: -32800 } });
+      sub = token.onCancellationRequested(() => api.cancel(id));
+    }
+    return api.request(method, params, id)
+      .then((r) => {
+        if (r && r.error) {
+          if (window.__lspDebug) console.log('[lsp-error]', method, JSON.stringify(r.error));
+          // -32800 RequestCancelled, -32801 ContentModified: expected while typing
+          if (r.error.code !== -32800 && r.error.code !== -32801 && !/cancel/i.test(r.error.message)) console.warn(`[lsp] ${method} failed`, r.error.message);
+          return r;
+        }
+        return { result: r ? r.result : null };
+      })
+      .catch((err) => ({ error: { message: String(err) } }))
+      .finally(() => sub && sub.dispose());
+  }
+
+  notify(method, params) {
+    if (this.caps) api.notify(method, params);
+  }
+
+  // ------------------------------------------------------------------ documents
+  isCSharp(model) {
+    return model.getLanguageId() === 'csharp' && model.uri.scheme === 'file';
+  }
+
+  open(model) {
+    if (!this.isCSharp(model)) return;
+    const uri = model.uri.toString();
+    if (this.docs.has(uri)) return;
+    const d = { model, version: 1, sub: null };
+    d.sub = model.onDidChangeContent((e) => {
+      d.version++;
+      this.notify('textDocument/didChange', {
+        textDocument: { uri, version: d.version },
+        contentChanges: e.changes.map((c) => ({ range: cv.toLspRange(c.range), rangeLength: c.rangeLength, text: c.text })),
+      });
+      this.schedulePull(uri);
+    });
+    this.docs.set(uri, d);
+    this.sendOpen(d);
+  }
+
+  sendOpen(d) {
+    if (!this.caps) return;
+    const uri = d.model.uri.toString();
+    this.notify('textDocument/didOpen', { textDocument: { uri, languageId: 'csharp', version: d.version, text: d.model.getValue() } });
+    this.schedulePull(uri, 100);
+  }
+
+  close(model) {
+    const uri = model.uri.toString();
+    const d = this.docs.get(uri);
+    if (!d) return;
+    d.sub.dispose();
+    this.docs.delete(uri);
+    this.pullResults.delete(uri);
+    this.notify('textDocument/didClose', { textDocument: { uri } });
+  }
+
+  saved(model) {
+    const uri = model.uri.toString();
+    if (this.docs.has(uri)) this.notify('textDocument/didSave', { textDocument: { uri } });
+  }
+
+  // ------------------------------------------------------------------ pull diagnostics
+  pullIdentifiers() {
+    const ids = new Set(this.diagRegs.values());
+    if (!ids.size && this.caps && this.caps.diagnosticProvider) ids.add(this.caps.diagnosticProvider.identifier || '');
+    return [...ids];
+  }
+
+  schedulePull(uri, delay = 450) {
+    if (!this.pullIdentifiers().length) return;
+    clearTimeout(this.pullTimers.get(uri));
+    this.pullTimers.set(uri, setTimeout(() => this.pull(uri), delay));
+  }
+
+  pullAll() {
+    for (const uri of this.docs.keys()) this.schedulePull(uri, 50);
+  }
+
+  async pull(uri) {
+    const d = this.docs.get(uri);
+    if (!d || !this.caps) return;
+    const version = d.version;
+    let store = this.pullResults.get(uri);
+    if (!store) this.pullResults.set(uri, (store = new Map()));
+    await Promise.all(this.pullIdentifiers().map(async (identifier) => {
+      const prev = store.get(identifier);
+      const params = { textDocument: { uri }, previousResultId: prev ? prev.resultId : undefined };
+      if (identifier) params.identifier = identifier;
+      const res = await this.request('textDocument/diagnostic', params);
+      if (!res) return;
+      if (res.kind === 'unchanged') {
+        if (prev) prev.resultId = res.resultId || prev.resultId;
+      } else {
+        store.set(identifier, { resultId: res.resultId, items: res.items || [] });
+      }
+    }));
+    const cur = this.docs.get(uri);
+    if (!cur || cur.version !== version) return; // stale; a newer pull is scheduled
+    const all = [];
+    for (const v of store.values()) all.push(...v.items);
+    this.lastDiagnostics.set(uri, all);
+    monaco.editor.setModelMarkers(cur.model, 'lsp', all.filter(cv.visibleDiagnostic).map(cv.toMarker));
+  }
+
+  // ------------------------------------------------------------------ providers
+  disposeProviders() {
+    this.providers.forEach((p) => p.dispose());
+    this.providers = [];
+  }
+
+  refreshSemantic() {
+    if (this.semanticEmitter) this.semanticEmitter.fire();
+  }
+
+  registerProviders() {
+    this.disposeProviders();
+    const caps = this.caps || {};
+    const L = monaco.languages;
+    const sel = 'csharp';
+    const self = this;
+    const doc = (model) => ({ uri: model.uri.toString() });
+    const add = (d) => this.providers.push(d);
+
+    // --- completion
+    if (caps.completionProvider) {
+      const cp = caps.completionProvider;
+      add(L.registerCompletionItemProvider(sel, {
+        triggerCharacters: cp.triggerCharacters || ['.'],
+        async provideCompletionItems(model, position, context, token) {
+          const triggerKind = context.triggerKind === L.CompletionTriggerKind.Invoke ? 1
+            : context.triggerKind === L.CompletionTriggerKind.TriggerCharacter ? 2 : 3;
+          const res = await self.requestRetry('textDocument/completion', {
+            textDocument: doc(model),
+            position: cv.toPos(position),
+            context: { triggerKind, triggerCharacter: context.triggerCharacter },
+          }, token);
+          if (!res) return { suggestions: [] };
+          const list = Array.isArray(res) ? { items: res, isIncomplete: false } : res;
+          const defaults = list.itemDefaults || {};
+          const word = model.getWordUntilPosition(position);
+          const fallback = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, position.column);
+          const suggestions = (list.items || []).map((it) => convertCompletion(it, defaults, fallback, model));
+          return { suggestions, incomplete: !!list.isIncomplete };
+        },
+        async resolveCompletionItem(item, token) {
+          if (!cp.resolveProvider || !item.__lsp) return item;
+          const r = await self.request('completionItem/resolve', item.__lsp, token);
+          if (!r) return item;
+          if (r.documentation) item.documentation = cv.markdown(r.documentation);
+          if (r.detail) item.detail = r.detail;
+          if (r.additionalTextEdits) item.additionalTextEdits = r.additionalTextEdits.map((e) => ({ range: cv.toRange(e.range), text: e.newText }));
+          if (r.command) item.command = { id: 'papyrus.lsp.command', title: r.command.title || '', arguments: [r.command] };
+          return item;
+        },
+      }));
+    }
+
+    // --- hover
+    if (caps.hoverProvider) {
+      add(L.registerHoverProvider(sel, {
+        async provideHover(model, position, token) {
+          const r = await self.requestRetry('textDocument/hover', { textDocument: doc(model), position: cv.toPos(position) }, token);
+          if (!r || !r.contents) return null;
+          const md = cv.markdown(r.contents);
+          if (!md || !md.value.trim()) return null;
+          return { contents: [md], range: r.range ? cv.toRange(r.range) : undefined };
+        },
+      }));
+    }
+
+    // --- signature help
+    if (caps.signatureHelpProvider) {
+      const sp = caps.signatureHelpProvider;
+      add(L.registerSignatureHelpProvider(sel, {
+        signatureHelpTriggerCharacters: sp.triggerCharacters || ['(', ','],
+        signatureHelpRetriggerCharacters: sp.retriggerCharacters || [','],
+        async provideSignatureHelp(model, position, token, context) {
+          const r = await self.requestRetry('textDocument/signatureHelp', {
+            textDocument: doc(model),
+            position: cv.toPos(position),
+            context: {
+              triggerKind: context.triggerKind,
+              triggerCharacter: context.triggerCharacter,
+              isRetrigger: context.isRetrigger,
+            },
+          }, token);
+          if (!r || !r.signatures || !r.signatures.length) return null;
+          return {
+            value: {
+              signatures: r.signatures.map((s) => ({
+                label: s.label,
+                documentation: cv.markdown(s.documentation) || undefined,
+                parameters: (s.parameters || []).map((p) => ({ label: p.label, documentation: cv.markdown(p.documentation) || undefined })),
+                activeParameter: s.activeParameter,
+              })),
+              activeSignature: r.activeSignature || 0,
+              activeParameter: r.activeParameter || 0,
+            },
+            dispose() {},
+          };
+        },
+      }));
+    }
+
+    // --- navigation
+    const locs = async (method, model, position, token) => {
+      const r = await self.request(method, { textDocument: doc(model), position: cv.toPos(position) }, token);
+      const list = toLocations(r);
+      await self.ensureModels(list.map((l) => l.uri));
+      return list;
+    };
+    if (caps.definitionProvider) add(L.registerDefinitionProvider(sel, { provideDefinition: (m, p, t) => locs('textDocument/definition', m, p, t) }));
+    if (caps.typeDefinitionProvider) add(L.registerTypeDefinitionProvider(sel, { provideTypeDefinition: (m, p, t) => locs('textDocument/typeDefinition', m, p, t) }));
+    if (caps.implementationProvider) add(L.registerImplementationProvider(sel, { provideImplementation: (m, p, t) => locs('textDocument/implementation', m, p, t) }));
+    if (caps.referencesProvider) {
+      add(L.registerReferenceProvider(sel, {
+        async provideReferences(model, position, context, token) {
+          const r = await self.request('textDocument/references', { textDocument: doc(model), position: cv.toPos(position), context: { includeDeclaration: context.includeDeclaration } }, token);
+          const list = toLocations(r);
+          await self.ensureModels([...new Set(list.map((l) => l.uri.toString()))].slice(0, 40).map((u) => monaco.Uri.parse(u)));
+          return list.filter((l) => monaco.editor.getModel(l.uri));
+        },
+      }));
+    }
+    if (caps.documentHighlightProvider) {
+      add(L.registerDocumentHighlightProvider(sel, {
+        async provideDocumentHighlights(model, position, token) {
+          const r = await self.request('textDocument/documentHighlight', { textDocument: doc(model), position: cv.toPos(position) }, token);
+          return (r || []).map((h) => ({ range: cv.toRange(h.range), kind: h.kind === 3 ? L.DocumentHighlightKind.Write : h.kind === 2 ? L.DocumentHighlightKind.Read : L.DocumentHighlightKind.Text }));
+        },
+      }));
+    }
+    if (caps.documentSymbolProvider) {
+      add(L.registerDocumentSymbolProvider(sel, {
+        displayName: 'C#',
+        async provideDocumentSymbols(model, token) {
+          const r = await self.documentSymbols(model, token);
+          return r.map(function conv(s) {
+            return {
+              name: s.name, detail: s.detail || '', kind: cv.symbolKind(s.kind), tags: [],
+              range: cv.toRange(s.range), selectionRange: cv.toRange(s.selectionRange), children: (s.children || []).map(conv),
+            };
+          });
+        },
+      }));
+    }
+
+    // --- code actions (Alt+Enter)
+    if (caps.codeActionProvider) {
+      const resolvable = typeof caps.codeActionProvider === 'object' && caps.codeActionProvider.resolveProvider;
+      add(L.registerCodeActionProvider(sel, {
+        async provideCodeActions(model, range, context, token) {
+          const uri = model.uri.toString();
+          const diags = (self.lastDiagnostics.get(uri) || []).filter((d) => cv.toRange(d.range).intersectRanges(range));
+          const r = await self.request('textDocument/codeAction', {
+            textDocument: doc(model),
+            range: cv.toLspRange(range),
+            context: { diagnostics: diags, only: context.only ? [context.only] : undefined, triggerKind: context.trigger === 1 ? 1 : 2 },
+          }, token);
+          const actions = (r || []).filter((a) => !(a.command && /fixAllCodeAction/.test(a.command.command || a.command)))
+            .map((a) => {
+              if (typeof a.command === 'string') return { title: a.title, command: { id: 'papyrus.lsp.command', title: a.title, arguments: [a] } };
+              const act = { title: a.title, kind: a.kind, isPreferred: a.isPreferred, diagnostics: (a.diagnostics || []).map(cv.toMarker), __lsp: a };
+              if (a.disabled) act.disabled = a.disabled.reason;
+              if (a.edit) act.edit = self.toMonacoEdit(a.edit);
+              if (a.command) act.command = { id: 'papyrus.lsp.command', title: a.command.title || a.title, arguments: [a.command] };
+              return act;
+            });
+          return { actions, dispose() {} };
+        },
+        async resolveCodeAction(action, token) {
+          if (!resolvable || !action.__lsp || action.edit) return action;
+          const r = await self.request('codeAction/resolve', action.__lsp, token);
+          if (r && r.edit) action.edit = self.toMonacoEdit(r.edit);
+          if (r && r.command) action.command = { id: 'papyrus.lsp.command', title: r.command.title || action.title, arguments: [r.command] };
+          return action;
+        },
+      }, { providedCodeActionKinds: ['quickfix', 'refactor', 'source'] }));
+    }
+
+    // --- formatting
+    const edits = (r) => (r || []).map((e) => ({ range: cv.toRange(e.range), text: e.newText }));
+    const fmtOpts = (o) => ({ tabSize: o.tabSize, insertSpaces: o.insertSpaces, trimTrailingWhitespace: true, insertFinalNewline: false });
+    if (caps.documentFormattingProvider) {
+      add(L.registerDocumentFormattingEditProvider(sel, {
+        async provideDocumentFormattingEdits(model, options, token) {
+          return edits(await self.request('textDocument/formatting', { textDocument: doc(model), options: fmtOpts(options) }, token));
+        },
+      }));
+    }
+    if (caps.documentRangeFormattingProvider) {
+      add(L.registerDocumentRangeFormattingEditProvider(sel, {
+        async provideDocumentRangeFormattingEdits(model, range, options, token) {
+          return edits(await self.request('textDocument/rangeFormatting', { textDocument: doc(model), range: cv.toLspRange(range), options: fmtOpts(options) }, token));
+        },
+      }));
+    }
+    if (caps.documentOnTypeFormattingProvider) {
+      const o = caps.documentOnTypeFormattingProvider;
+      add(L.registerOnTypeFormattingEditProvider(sel, {
+        autoFormatTriggerCharacters: [o.firstTriggerCharacter, ...(o.moreTriggerCharacter || [])],
+        async provideOnTypeFormattingEdits(model, position, ch, options, token) {
+          return edits(await self.request('textDocument/onTypeFormatting', { textDocument: doc(model), position: cv.toPos(position), ch, options: fmtOpts(options) }, token));
+        },
+      }));
+    }
+
+    // --- rename
+    if (caps.renameProvider) {
+      const prepare = typeof caps.renameProvider === 'object' && caps.renameProvider.prepareProvider;
+      add(L.registerRenameProvider(sel, {
+        async provideRenameEdits(model, position, newName, token) {
+          const r = await self.request('textDocument/rename', { textDocument: doc(model), position: cv.toPos(position), newName }, token);
+          if (!r) return { edits: [], rejectReason: '이름을 바꿀 수 없는 위치예요' };
+          return self.toMonacoEdit(r);
+        },
+        resolveRenameLocation: prepare ? async (model, position, token) => {
+          const r = await self.request('textDocument/prepareRename', { textDocument: doc(model), position: cv.toPos(position) }, token);
+          if (!r) return { range: new monaco.Range(1, 1, 1, 1), text: '', rejectReason: '이름을 바꿀 수 없는 위치예요' };
+          if (r.range) return { range: cv.toRange(r.range), text: r.placeholder || model.getValueInRange(cv.toRange(r.range)) };
+          if (r.start) {
+            const range = cv.toRange(r);
+            return { range, text: model.getValueInRange(range) };
+          }
+          const w = model.getWordAtPosition(position);
+          return w ? { range: new monaco.Range(position.lineNumber, w.startColumn, position.lineNumber, w.endColumn), text: w.word } : null;
+        } : undefined,
+      }));
+    }
+
+    // --- folding, selection
+    if (caps.foldingRangeProvider) {
+      add(L.registerFoldingRangeProvider(sel, {
+        async provideFoldingRanges(model, _ctx, token) {
+          const r = await self.request('textDocument/foldingRange', { textDocument: doc(model) }, token);
+          return (r || []).map((f) => ({
+            start: f.startLine + 1,
+            end: f.endLine + 1,
+            kind: f.kind ? L.FoldingRangeKind.fromValue(f.kind) : undefined,
+          }));
+        },
+      }));
+    }
+    if (caps.selectionRangeProvider) {
+      add(L.registerSelectionRangeProvider(sel, {
+        async provideSelectionRanges(model, positions, token) {
+          const r = await self.request('textDocument/selectionRange', { textDocument: doc(model), positions: positions.map(cv.toPos) }, token);
+          return (r || []).map((sr) => {
+            const out = [];
+            for (let cur = sr; cur; cur = cur.parent) out.push({ range: cv.toRange(cur.range) });
+            return out;
+          });
+        },
+      }));
+    }
+
+    // --- semantic tokens
+    if (caps.semanticTokensProvider && caps.semanticTokensProvider.legend) {
+      const legend = caps.semanticTokensProvider.legend;
+      const clean = (s) => s.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const monacoLegend = { tokenTypes: legend.tokenTypes.map(clean), tokenModifiers: legend.tokenModifiers.map(clean) };
+      this.semanticEmitter = new monaco.Emitter();
+      const full = caps.semanticTokensProvider.full;
+      if (full) {
+        add(L.registerDocumentSemanticTokensProvider(sel, {
+          onDidChange: this.semanticEmitter.event,
+          getLegend: () => monacoLegend,
+          async provideDocumentSemanticTokens(model, _lastId, token) {
+            const r = await self.request('textDocument/semanticTokens/full', { textDocument: doc(model) }, token);
+            if (!r || !r.data) return null;
+            return { data: new Uint32Array(r.data), resultId: r.resultId };
+          },
+          releaseDocumentSemanticTokens() {},
+        }));
+      }
+      if (caps.semanticTokensProvider.range) {
+        add(L.registerDocumentRangeSemanticTokensProvider(sel, {
+          getLegend: () => monacoLegend,
+          async provideDocumentRangeSemanticTokens(model, range, token) {
+            const r = await self.request('textDocument/semanticTokens/range', { textDocument: doc(model), range: cv.toLspRange(range) }, token);
+            if (!r || !r.data) return null;
+            return { data: new Uint32Array(r.data), resultId: r.resultId };
+          },
+        }));
+      }
+    }
+
+    // --- inlay hints (parameter names, like Rider)
+    if (caps.inlayHintProvider) {
+      this.inlayEmitter = new monaco.Emitter();
+      const resolvable = typeof caps.inlayHintProvider === 'object' && caps.inlayHintProvider.resolveProvider;
+      add(L.registerInlayHintsProvider(sel, {
+        onDidChangeInlayHints: this.inlayEmitter.event,
+        async provideInlayHints(model, range, token) {
+          const r = await self.request('textDocument/inlayHint', { textDocument: doc(model), range: cv.toLspRange(range) }, token);
+          const hints = (r || []).map((h) => ({
+            label: typeof h.label === 'string' ? h.label : h.label.map((p) => ({ label: p.value, tooltip: p.tooltip })),
+            position: { lineNumber: h.position.line + 1, column: h.position.character + 1 },
+            kind: h.kind === 1 ? L.InlayHintKind.Type : h.kind === 2 ? L.InlayHintKind.Parameter : undefined,
+            paddingLeft: h.paddingLeft,
+            paddingRight: h.paddingRight,
+            tooltip: h.tooltip ? cv.markdown(h.tooltip) : undefined,
+            __lsp: h,
+          }));
+          return { hints, dispose() {} };
+        },
+        resolveInlayHint: resolvable ? async (hint, token) => {
+          const r = await self.request('inlayHint/resolve', hint.__lsp, token);
+          if (r && r.tooltip) hint.tooltip = cv.markdown(r.tooltip);
+          return hint;
+        } : undefined,
+      }));
+    }
+
+    // --- code lens ("N references")
+    if (caps.codeLensProvider) {
+      this.codeLensEmitter = new monaco.Emitter();
+      const resolvable = caps.codeLensProvider.resolveProvider;
+      this.codeLensProvider = {
+        onDidChange: this.codeLensEmitter.event,
+        async provideCodeLenses(model, token) {
+          if (!self.codeLensEnabled) return { lenses: [], dispose() {} };
+          const r = await self.request('textDocument/codeLens', { textDocument: doc(model) }, token);
+          // Rider-style: usage counts on types and methods only, not on every field
+          const keep = (l) => {
+            const line = model.getLineContent(l.range.start.line + 1);
+            return /\b(class|struct|interface|enum|record|delegate)\b/.test(line) || /\(/.test(line.split('=')[0]);
+          };
+          const lenses = (r || []).filter(keep).map((l) => ({
+            range: cv.toRange(l.range),
+            command: l.command ? { id: 'papyrus.lsp.command', title: l.command.title, arguments: [l.command] } : undefined,
+            __lsp: l,
+          }));
+          return { lenses, dispose() {} };
+        },
+        resolveCodeLens: resolvable ? async (model, lens, token) => {
+          const r = await self.request('codeLens/resolve', lens.__lsp, token);
+          if (r && r.command) lens.command = { id: 'papyrus.lsp.command', title: r.command.title, arguments: [r.command, model.uri.toString()] };
+          return lens;
+        } : undefined,
+      };
+      add(L.registerCodeLensProvider(sel, this.codeLensProvider));
+    }
+  }
+
+  async documentSymbols(model, token) {
+    if (!this.caps || !this.caps.documentSymbolProvider) return [];
+    const r = await this.request('textDocument/documentSymbol', { textDocument: { uri: model.uri.toString() } }, token);
+    if (!r) return [];
+    // Flat SymbolInformation[] -> pseudo-tree
+    if (r.length && r[0].location) {
+      return r.map((s) => ({ name: s.name, kind: s.kind, detail: s.containerName || '', range: s.location.range, selectionRange: s.location.range, children: [] }));
+    }
+    return r;
+  }
+
+  async workspaceSymbols(query, token) {
+    if (!this.caps || !this.caps.workspaceSymbolProvider) return [];
+    const r = await this.request('workspace/symbol', { query }, token);
+    return r || [];
+  }
+
+  async references(model, position) {
+    const r = await this.request('textDocument/references', {
+      textDocument: { uri: model.uri.toString() },
+      position: cv.toPos(position),
+      context: { includeDeclaration: false },
+    });
+    return r || [];
+  }
+
+  // Converts an LSP WorkspaceEdit to Monaco's. Edits for files that aren't loaded as models are
+  // written to disk directly (via onApplyEdit) because Monaco can only edit models it knows.
+  toMonacoEdit(we) {
+    const out = [];
+    const closed = { changes: {} };
+    let hasClosed = false;
+    const push = (uri, edits) => {
+      const model = monaco.editor.getModel(monaco.Uri.parse(uri));
+      if (model && (!this.isEditableModel || this.isEditableModel(model))) {
+        for (const e of edits) out.push({ resource: model.uri, textEdit: { range: cv.toRange(e.range), text: e.newText }, versionId: undefined });
+      } else {
+        closed.changes[uri] = (closed.changes[uri] || []).concat(edits);
+        hasClosed = true;
+      }
+    };
+    if (we.documentChanges) {
+      for (const dc of we.documentChanges) {
+        if (dc.textDocument) push(dc.textDocument.uri, dc.edits);
+        else if (dc.kind) {
+          closed.documentChanges = closed.documentChanges || [];
+          closed.documentChanges.push(dc);
+          hasClosed = true;
+        }
+      }
+    } else if (we.changes) {
+      for (const [uri, edits] of Object.entries(we.changes)) push(uri, edits);
+    }
+    if (hasClosed) this.onApplyEdit && this.onApplyEdit(closed, { closedOnly: true });
+    return { edits: out };
+  }
+
+  async ensureModels(uris) {
+    if (this.ensureModelHook) await this.ensureModelHook(uris);
+  }
+}
+
+function normUri(u) {
+  return monaco.Uri.parse(u).toString();
+}
+
+function toLocations(r) {
+  if (!r) return [];
+  const arr = Array.isArray(r) ? r : [r];
+  return arr.map((l) => (l.targetUri
+    ? { uri: monaco.Uri.parse(l.targetUri), range: cv.toRange(l.targetSelectionRange || l.targetRange) }
+    : { uri: monaco.Uri.parse(l.uri), range: cv.toRange(l.range) }));
+}
+
+function convertCompletion(it, defaults, fallback, model) {
+  const L = monaco.languages;
+  let range = fallback;
+  let text = it.insertText != null ? it.insertText : it.label;
+  const te = it.textEdit || (defaults.editRange ? { ...(defaults.editRange.insert ? defaults.editRange : { range: defaults.editRange }), newText: it.textEditText != null ? it.textEditText : text } : null);
+  if (te) {
+    text = te.newText;
+    range = te.range ? cv.toRange(te.range) : { insert: cv.toRange(te.insert), replace: cv.toRange(te.replace) };
+  }
+  // Monaco requires single-line ranges that contain the cursor line
+  const fmt = it.insertTextFormat != null ? it.insertTextFormat : defaults.insertTextFormat;
+  let commit = it.commitCharacters || defaults.commitCharacters;
+  if (commit) commit = commit.filter((c) => c !== ' ');
+  const s = {
+    label: it.labelDetails ? { label: it.label, detail: it.labelDetails.detail, description: it.labelDetails.description } : it.label,
+    kind: cv.completionKind(it.kind),
+    detail: it.detail,
+    documentation: cv.markdown(it.documentation) || undefined,
+    sortText: it.sortText,
+    filterText: it.filterText,
+    preselect: it.preselect,
+    insertText: text,
+    insertTextRules: fmt === 2 ? L.CompletionItemInsertTextRule.InsertAsSnippet : L.CompletionItemInsertTextRule.None,
+    range,
+    commitCharacters: commit,
+    tags: it.deprecated || (it.tags && it.tags.includes(1)) ? [L.CompletionItemTag.Deprecated] : undefined,
+    additionalTextEdits: it.additionalTextEdits ? it.additionalTextEdits.map((e) => ({ range: cv.toRange(e.range), text: e.newText })) : undefined,
+    command: it.command ? { id: 'papyrus.lsp.command', title: it.command.title || '', arguments: [it.command, model.uri.toString()] } : undefined,
+    __lsp: { ...it, data: it.data !== undefined ? it.data : defaults.data },
+  };
+  return s;
+}

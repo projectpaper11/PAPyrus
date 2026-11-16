@@ -1,0 +1,37 @@
+{
+  "name": "papyrus",
+  "productName": "PAPyrus",
+  "version": "0.2.0",
+  "description": "PAPyrus — lightweight C# IDE for Unity",
+  "main": "src/main/main.js",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --config electron-builder.config.cjs --win --publish never",
+    "publish": "npm run build && electron-builder --config electron-builder.config.cjs --win --publish always",
+    "release": "npm version patch -m \"PAPyrus %s\" && git push --follow-tags"
+  },
+  "devDependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@vscode/codicons": "^0.0.46-24",
+    "electron": "^45.3.2",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "monaco-editor": "^0.57.0",
+    "pe-library": "^2.0.3",
+    "resedit": "^2.0.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11",
+    "iconv-lite": "^0.7.3",
+    "vscode-jsonrpc": "^8.2.1"
+  },
+  "author": "PAPyrus",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/projectpaper11/papyrus.git"
+  }
+}

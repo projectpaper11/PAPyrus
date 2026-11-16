@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: file:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; worker-src 'self' blob:" />
+  <title>PAPyrus</title>
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="titlebar">
+      <div class="tb-left">
+        <div class="tb-logo" title="PAPyrus"></div>
+        <button class="tb-btn icon" id="btn-menu" title="메뉴"><i class="codicon codicon-menu"></i></button>
+        <button class="tb-widget" id="project-widget" title="프로젝트">
+          <span class="proj-badge" id="proj-badge">–</span><span id="proj-name">프로젝트 없음</span><i class="codicon codicon-chevron-down"></i>
+        </button>
+      </div>
+      <div class="tb-drag"></div>
+      <div class="tb-right">
+        <div class="tb-unity" id="unity-widget">
+          <span class="unity-dot" id="unity-dot"></span>
+          <span class="unity-label" id="unity-label">Unity</span>
+          <button class="tb-btn icon" id="btn-play" title="Play (F5)"><i class="codicon codicon-play"></i></button>
+          <button class="tb-btn icon" id="btn-pause" title="Pause"><i class="codicon codicon-debug-pause"></i></button>
+          <button class="tb-btn icon" id="btn-step" title="Step"><i class="codicon codicon-debug-step-over"></i></button>
+          <span class="tb-sep"></span>
+          <button class="tb-btn icon" id="btn-refresh" title="Unity 에셋 새로고침 (Ctrl+Alt+R)"><i class="codicon codicon-refresh"></i></button>
+        </div>
+        <button class="tb-btn icon" id="btn-search" title="Search Everywhere (Shift 두 번)"><i class="codicon codicon-search"></i></button>
+        <button class="tb-btn icon" id="btn-settings" title="설정 (Ctrl+,)"><i class="codicon codicon-settings-gear"></i></button>
+        <div class="tb-wc-space"></div>
+      </div>
+    </header>
+
+    <div id="body">
+      <nav id="stripe">
+        <div class="stripe-top">
+          <button class="stripe-btn active" data-tool="explorer" title="Explorer (Ctrl+Shift+E)"><i class="codicon codicon-folder"></i></button>
+          <button class="stripe-btn" data-tool="structure" title="Structure"><i class="codicon codicon-symbol-structure"></i></button>
+        </div>
+        <div class="stripe-bottom">
+          <button class="stripe-btn" data-panel="unity" title="Unity Log (Ctrl+Shift+Y)"><i class="codicon codicon-output"></i><span class="stripe-badge" id="badge-unity"></span></button>
+          <button class="stripe-btn" data-panel="problems" title="Problems (Ctrl+Shift+M)"><i class="codicon codicon-warning"></i><span class="stripe-badge" id="badge-problems"></span></button>
+          <button class="stripe-btn" data-panel="find" title="Find (Ctrl+Shift+F)"><i class="codicon codicon-search"></i></button>
+          <button class="stripe-btn" data-panel="output" title="Output (Ctrl+Shift+U)"><i class="codicon codicon-terminal"></i></button>
+        </div>
+      </nav>
+
+      <div id="main">
+        <div id="workspace">
+          <aside id="sidebar">
+            <div class="tw-header">
+              <span class="tw-title" id="sidebar-title">Explorer</span>
+              <span class="tw-sub" id="sidebar-sub"></span>
+              <div class="tw-actions" id="sidebar-actions"></div>
+            </div>
+            <div class="tw-body" id="sidebar-body"></div>
+          </aside>
+          <div class="resizer v" id="resizer-side"></div>
+          <section id="editor-area">
+            <div id="tabs"></div>
+            <div id="editor-host"></div>
+            <div id="breadcrumbs"></div>
+            <div id="welcome"></div>
+            <div id="nontext"></div>
+          </section>
+        </div>
+        <div class="resizer h" id="resizer-bottom"></div>
+        <section id="bottom">
+          <div class="tw-header">
+            <div class="bottom-tabs" id="bottom-tabs"></div>
+            <div class="tw-actions" id="bottom-actions"></div>
+            <button class="tb-btn icon small" id="bottom-hide" title="숨기기 (Ctrl+J)"><i class="codicon codicon-chrome-minimize"></i></button>
+          </div>
+          <div class="tw-body" id="bottom-body"></div>
+        </section>
+      </div>
+    </div>
+
+    <footer id="statusbar">
+      <div class="sb-left" id="sb-path"></div>
+      <div class="sb-right">
+        <span class="sb-item" id="sb-key"></span>
+        <span class="sb-item" id="sb-update"></span>
+        <span class="sb-item" id="sb-lsp" title="C# 언어 서버"></span>
+        <span class="sb-item" id="sb-unity"></span>
+        <span class="sb-item" id="sb-pos"></span>
+        <span class="sb-item" id="sb-eol"></span>
+        <span class="sb-item" id="sb-enc"></span>
+        <span class="sb-item" id="sb-indent"></span>
+      </div>
+    </footer>
+  </div>
+  <div id="overlay-root"></div>
+  <script src="app.js"></script>
+</body>
+</html>
