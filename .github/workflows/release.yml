@@ -20,6 +20,28 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: npx electron-builder --config electron-builder.config.cjs --win --publish always
+      # Build only. electron-builder's own GitHub publisher uploads the files in parallel tasks that
+      # race to create the release: one fails (422 already_exists) or the run ends early, and the
+      # release ends up without the installer or latest.yml (auto-update then gets a 404).
+      - run: npx electron-builder --config electron-builder.config.cjs --win --publish never
+      # One release with all three files; re-running the job replaces them.
+      - name: Publish GitHub Release
+        shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          $files = @("release/PAPyrus-Setup-$version.exe", "release/PAPyrus-Setup-$version.exe.blockmap", "release/latest.yml")
+          foreach ($f in $files) { if (-not (Test-Path $f)) { throw "missing build output: $f" } }
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG @files --clobber
+          } else {
+            gh release create $env:TAG @files --title $version --generate-notes --latest
+          }
+          if ($LASTEXITCODE -ne 0) { throw "gh release failed" }
+          $names = gh release view $env:TAG --json assets --jq '.assets[].name'
+          foreach ($f in $files) { if ($names -notcontains (Split-Path $f -Leaf)) { throw "not uploaded: $f" } }
+          Write-Host "published $env:TAG with: $($names -join ', ')"

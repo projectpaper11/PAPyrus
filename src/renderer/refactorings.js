@@ -268,6 +268,9 @@ function interfaceMember(text, m, nameStart, sym) {
     rest = rest.slice(w[0].length);
   }
   if (!mods.includes('public') || mods.includes('static')) return null;
+  // constructors / destructors (Roslyn reports them as methods too): a name right before "(" with no
+  // return type, or "~Name(". They can't be interface members.
+  if (sym.kind === 9 || /^~/.test(rest) || /^@?\w+\s*\(/.test(rest)) return null;
   if (sym.kind === 6) return { sig: `${rest};`, icon: 'symbol-method' };
   if (sym.kind === 24) return { sig: `${rest.replace(/=.*$/, '').trim()};`, icon: 'symbol-event' };
   // property / indexer: the accessors anyone can call
