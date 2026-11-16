@@ -2,7 +2,7 @@
 
 <img src="build/icon256.png" width="96" alt="PAPyrus">
 
-Unity용으로 만든 가벼운 C# IDE예요. 화면 구성은 Rider를 따라 했고, 단축키는 VS Code 키맵이 기본이에요. 개인 프로젝트에 쓰려고 만들었고, 배포·판매용이 아니에요.
+Unity용으로 만든 가벼운 C# IDE예요. 화면 구성은 Rider를 따라 했고, 단축키는 VS Code 키맵이 기본이에요. 개인 프로젝트에 쓰려고 만들었습니다.
 
 - **에디터**: Monaco(VS Code의 에디터 엔진), JetBrains Mono, Rider풍 어두운·밝은 색 구성(시맨틱 하이라이팅 포함)
 - **C# 언어 기능**: Roslyn 언어 서버(`roslyn-language-server`, MIT)
