@@ -66,7 +66,7 @@ namespace Papyrus.Ide.Editor
             {
                 s_SelectionDirty = false;
                 var o = Selection.activeObject;
-                PapyrusBridge.Send("{\"type\":\"inspector.selection\",\"target\":" + (o ? o.GetInstanceID() : 0) +
+                PapyrusBridge.Send("{\"type\":\"inspector.selection\",\"target\":" + PapyrusIds.Of(o) +
                                    ",\"kind\":" + Json.Str(KindOf(o)) +
                                    ",\"assetPath\":" + Json.Str(o ? AssetDatabase.GetAssetPath(o) : "") + "}");
             }
@@ -148,13 +148,7 @@ namespace Papyrus.Ide.Editor
             }
         }
 
-        static Object Find(int id)
-        {
-            // obsolete since Unity 6.3 (EntityIdToObject), but still works and the package supports 2021.3+
-#pragma warning disable 0618
-            return id == 0 ? null : EditorUtility.InstanceIDToObject(id);
-#pragma warning restore 0618
-        }
+        static Object Find(int id) => PapyrusIds.Find(id); // instance ids before Unity 6.5, see PapyrusIds
 
         static string KindOf(Object o)
         {
@@ -216,7 +210,7 @@ namespace Papyrus.Ide.Editor
         {
             count++;
             var go = t.gameObject;
-            sb.Append("{\"id\":").Append(go.GetInstanceID())
+            sb.Append("{\"id\":").Append(PapyrusIds.Of(go))
               .Append(",\"name\":").Append(Json.Str(go.name))
               .Append(",\"active\":").Append(Json.Bool(go.activeSelf))
               .Append(",\"prefab\":").Append(Json.Bool(PrefabUtility.IsPartOfPrefabInstance(go) && PrefabUtility.IsOutermostPrefabInstanceRoot(go)))
@@ -253,7 +247,7 @@ namespace Papyrus.Ide.Editor
         static string ObjectJson(Object o)
         {
             var sb = new StringBuilder("{");
-            sb.Append("\"id\":").Append(o.GetInstanceID())
+            sb.Append("\"id\":").Append(PapyrusIds.Of(o))
               .Append(",\"name\":").Append(Json.Str(o.name))
               .Append(",\"kind\":").Append(Json.Str(KindOf(o)))
               .Append(",\"assetPath\":").Append(Json.Str(AssetDatabase.GetAssetPath(o)));
@@ -293,7 +287,7 @@ namespace Papyrus.Ide.Editor
             if (c is MonoBehaviour) script = MonoScript.FromMonoBehaviour((MonoBehaviour)c);
             else if (c is ScriptableObject) script = MonoScript.FromScriptableObject((ScriptableObject)c);
             var behaviour = c as Behaviour;
-            sb.Append("{\"id\":").Append(c.GetInstanceID())
+            sb.Append("{\"id\":").Append(PapyrusIds.Of(c))
               .Append(",\"type\":").Append(Json.Str(ObjectNames.NicifyVariableName(c.GetType().Name)))
               .Append(",\"typeName\":").Append(Json.Str(c.GetType().FullName))
               .Append(",\"script\":").Append(Json.Str(script ? AssetDatabase.GetAssetPath(script) : null))
@@ -380,7 +374,7 @@ namespace Papyrus.Ide.Editor
                     kind = "object";
                     var o = p.objectReferenceValue;
                     value = o
-                        ? "{\"id\":" + o.GetInstanceID() + ",\"name\":" + Json.Str(o.name) + ",\"type\":" + Json.Str(o.GetType().Name) +
+                        ? "{\"id\":" + PapyrusIds.Of(o) + ",\"name\":" + Json.Str(o.name) + ",\"type\":" + Json.Str(o.GetType().Name) +
                           ",\"assetPath\":" + Json.Str(AssetDatabase.GetAssetPath(o)) + "}"
                         : "null";
                     sb.Append(",\"refType\":").Append(Json.Str(RefTypeName(p)));
@@ -528,7 +522,7 @@ namespace Papyrus.Ide.Editor
             var c = Undo.AddComponent(go, t);
             if (!c) return Fail("'" + t.Name + "'을(를) 붙이지 못했어요. 이미 있거나(DisallowMultipleComponent) 필요한 조건이 맞지 않아요.");
             MarkDirty(go);
-            return Ok("{\"component\":" + c.GetInstanceID() + "}");
+            return Ok("{\"component\":" + PapyrusIds.Of(c) + "}");
         }
 
         static string RemoveComponent(PapyrusBridge.Command cmd)
@@ -713,7 +707,7 @@ namespace Papyrus.Ide.Editor
             if (t != null) Undo.AddComponent(go, t);
             MarkDirty(go);
             Selection.activeGameObject = go;
-            return Ok("{\"id\":" + go.GetInstanceID() + "}");
+            return Ok("{\"id\":" + PapyrusIds.Of(go) + "}");
         }
 
         static string CreateAsset(PapyrusBridge.Command cmd)
@@ -729,7 +723,7 @@ namespace Papyrus.Ide.Editor
             AssetDatabase.CreateAsset(asset, path);
             AssetDatabase.SaveAssets();
             Selection.activeObject = asset;
-            return Ok("{\"id\":" + asset.GetInstanceID() + ",\"path\":" + Json.Str(path) + "}");
+            return Ok("{\"id\":" + PapyrusIds.Of(asset) + ",\"path\":" + Json.Str(path) + "}");
         }
 
         static string MirrorOpen(PapyrusBridge.Command cmd)

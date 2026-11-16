@@ -62,7 +62,7 @@ namespace Papyrus.Ide.Editor
 
         static void BeforeReload()
         {
-            var id = s_Window ? s_Window.GetInstanceID() : 0;
+            var id = PapyrusIds.Of(s_Window);
             Close();
             if (id != 0) SessionState.SetInt(k_WindowKey, id); // checked again after the reload
         }
@@ -74,7 +74,7 @@ namespace Papyrus.Ide.Editor
             SessionState.EraseInt(k_WindowKey);
             if (id == 0) return;
 #pragma warning disable 0618
-            var win = EditorUtility.InstanceIDToObject(id) as EditorWindow;
+            var win = PapyrusIds.Find(id) as EditorWindow;
 #pragma warning restore 0618
             if (win && win != s_Window)
             {
@@ -108,7 +108,7 @@ namespace Papyrus.Ide.Editor
             if (!win) return "Unity 인스펙터 창을 열지 못했어요. (Unity 2021.3 이상이 필요해요)";
             s_Window = win;
             s_Active = true;
-            SessionState.SetInt(k_WindowKey, win.GetInstanceID());
+            SessionState.SetInt(k_WindowKey, PapyrusIds.Of(win));
 #if UNITY_EDITOR_WIN
             WindowCapture.Adopt(before); // the native window that just appeared is ours
 #endif
