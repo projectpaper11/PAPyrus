@@ -14,12 +14,17 @@ import * as cv from './conv.js';
 import { LspClient } from './lsp-client.js';
 import { Editors } from './editors.js';
 import { Explorer } from './explorer.js';
+import { Inspector } from './inspector.js';
 import { Panels } from './panels.js';
 import { SearchEverywhere, StructureView } from './search.js';
 import { Keybindings, displayKey } from './keybindings.js';
 import { SettingsView } from './settings-view.js';
 import { Updates } from './updates.js';
 import { SetupWizard } from './setup-wizard.js';
+import { CodeMemory } from './code-memory.js';
+import './unity-completions.js';
+import { registerOverrideCompletion } from './override-completions.js';
+import { showLocationPopup, popupPoint } from './location-popup.js';
 import { el, icon, basename, dirname, relPath, joinPath, contextMenu, toast, debounce, samePath, extname } from './ui.js';
 
 const O = window.papyrus;
@@ -44,6 +49,7 @@ class App {
     this.settings = init.settings;
     this.version = init.version;
     this.electronVersion = init.electron;
+    this.externalEditorPath = init.externalEditorPath;
     this.recentProjects = init.recentProjects;
     this.applyTheme();
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
@@ -64,11 +70,19 @@ class App {
     });
     this.lsp.codeLensEnabled = this.settings['editor.codeLens'] !== false;
     this.editors = new Editors(this);
+    this.codeMemory = new CodeMemory({
+      enabled: () => this.settings['editor.learnedCompletions'] !== false,
+      lspCovers: (model) => model.getLanguageId() === 'csharp' && this.lspState === 'ready',
+    });
+    this.codeMemory.attach(this.editors.editor);
+    registerOverrideCompletion(this);
+    this.attachCtrlClickUsages(this.editors.editor);
     this.lsp.ensureModelHook = (uris) => this.editors.ensureModels(uris);
     this.lsp.isEditableModel = (m) => this.editors.tabs.some((t) => t.model === m);
     this.logoUrl = logoUrl;
     this.keys = new Keybindings(this);
     this.explorer = new Explorer(this);
+    this.inspector = new Inspector(this);
     this.structure = new StructureView(this);
     this.panels = new Panels(this);
     this.search = new SearchEverywhere(this);
@@ -120,6 +134,14 @@ class App {
       root.style.setProperty('--side-w', w + 'px');
       localStorage.setItem('layout:sideW', w);
     });
+    const rightW = parseInt(localStorage.getItem('layout:rightW') || '340', 10);
+    root.style.setProperty('--right-w', rightW + 'px');
+    drag(document.getElementById('resizer-right'), 'x', () => cssPx('--right-w'), (start, d) => {
+      const w = Math.max(240, Math.min(800, start - d));
+      root.style.setProperty('--right-w', w + 'px');
+      localStorage.setItem('layout:rightW', w);
+    });
+    document.getElementById('btn-inspector').onclick = () => this.inspector.toggleDock();
     drag(document.getElementById('resizer-bottom'), 'y', () => cssPx('--bottom-h'), (start, d) => {
       const h = Math.max(90, Math.min(window.innerHeight - 200, start - d));
       root.style.setProperty('--bottom-h', h + 'px');
@@ -137,6 +159,11 @@ class App {
   }
 
   showTool(id) {
+    if (id === 'inspector') {
+      // the inspector lives in the right dock now (older sessions saved it as a sidebar tool)
+      this.inspector.showDock();
+      id = 'explorer';
+    }
     this.tool = id;
     this.sidebarVisible = true;
     const side = document.getElementById('sidebar');
@@ -145,10 +172,10 @@ class App {
     document.querySelectorAll('.stripe-btn[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === id));
     const body = document.getElementById('sidebar-body');
     const actions = document.getElementById('sidebar-actions');
-    document.getElementById('sidebar-title').textContent = id === 'explorer' ? 'Explorer' : 'Structure';
+    document.getElementById('sidebar-title').textContent = id === 'explorer' ? '탐색기' : '구조';
     document.getElementById('sidebar-sub').textContent = id === 'explorer' ? (this.isUnityProject ? 'Unity' : '') : '';
     if (id === 'explorer') {
-      body.replaceChildren(this.explorer.el);
+      body.replaceChildren(this.explorer.view);
       actions.replaceChildren(
         el('button.tb-btn.icon.small', { title: '현재 파일 선택', onclick: () => this.keys.run('papyrus.revealInExplorer') }, icon('target')),
         el('button.tb-btn.icon.small', { title: '모두 접기', onclick: () => { this.explorer.expanded = new Set([this.project]); this.explorer.render(); } }, icon('collapse-all')),
@@ -215,7 +242,7 @@ class App {
       this.cmdItem('papyrus.save'),
       this.cmdItem('papyrus.saveAll'),
       this.cmdItem('workbench.commandPalette', '명령 팔레트…'),
-      { label: 'Search Everywhere', icon: 'search', key: this.settings['keyboard.doubleShift'] ? 'Shift Shift' : '', action: () => this.search.open('all') },
+      { label: '전체 검색', icon: 'search', key: this.settings['keyboard.doubleShift'] ? 'Shift Shift' : '', action: () => this.search.open('all') },
       this.cmdItem('papyrus.findInFiles'),
       '-',
       this.cmdItem('papyrus.toggleTheme', this.effectiveTheme() === 'dark' ? '밝은 테마로 전환' : '어두운 테마로 전환'),
@@ -247,13 +274,13 @@ class App {
     this.menuAt(anchor, [
       { label: st.state === 'connected' ? `연결됨 · Unity ${st.unityVersion || ''}` : 'Unity 연결 안 됨', icon: st.state === 'connected' ? 'pass' : 'circle-slash', disabled: true },
       '-',
-      this.cmdItem('unity.play', 'Play / Stop', null, { disabled: off }),
-      this.cmdItem('unity.pause', 'Pause', null, { disabled: off }),
-      this.cmdItem('unity.step', 'Step', null, { disabled: off }),
+      this.cmdItem('unity.play', '플레이 / 정지', null, { disabled: off }),
+      this.cmdItem('unity.pause', '일시정지', null, { disabled: off }),
+      this.cmdItem('unity.step', '한 프레임 진행', null, { disabled: off }),
       this.cmdItem('unity.refresh', '에셋 새로고침', null, { disabled: off }),
       this.cmdItem('unity.sync', '프로젝트 파일 다시 생성', null, { disabled: off }),
       '-',
-      this.cmdItem('papyrus.showUnityLog', 'Unity Log 보기'),
+      this.cmdItem('papyrus.showUnityLog', 'Unity 로그 보기'),
       this.cmdItem('unity.installPackage'),
     ]);
   }
@@ -265,6 +292,10 @@ class App {
   }
 
   async openProject(path, goto) {
+    // Picking the Assets folder by mistake: open the Unity project root instead.
+    if (/^assets$/i.test(basename(path)) && (await O.fs.exists(joinPath(dirname(path), 'ProjectSettings')))) {
+      path = dirname(path);
+    }
     if (this.project && !samePath(path, this.project)) {
       if (!(await this.editors.closeAll())) return;
     }
@@ -284,7 +315,8 @@ class App {
     if (tool === null) this.hideSidebar();
     else this.showTool(tool || 'explorer');
     O.fs.watch(path);
-    this.indexFiles();
+    this.inspector.resetForProject();
+    Promise.resolve(this.indexFiles()).then(() => this.inspector.restore());
 
     this.slnAtStart = await this.hasSolution();
     O.unity.start();
@@ -394,14 +426,14 @@ class App {
     const row = (key, label) => (key ? [el('span', null, ...key.split(' ').map((x) => el('kbd', null, x))), el('span', null, label)] : []);
     w.replaceChildren(el('div.welcome', { style: { marginTop: '20vh', maxWidth: '380px' } },
       el('div.shortcuts', null,
-        row(this.settings['keyboard.doubleShift'] ? 'Shift Shift' : '', 'Search Everywhere'),
+        row(this.settings['keyboard.doubleShift'] ? 'Shift Shift' : '', '전체 검색'),
         row(this.kb('workbench.quickOpen'), '파일로 이동'),
         row(this.kb('workbench.commandPalette'), '명령 팔레트'),
         row(this.kb('workbench.gotoSymbol'), '심볼로 이동'),
         row(this.kb('workbench.recentFiles'), '최근 파일'),
         row(this.kb('papyrus.findInFiles'), '파일에서 찾기'),
         row(this.kb('papyrus.newScript'), '새 C# 스크립트'),
-        row(this.kb('unity.play'), 'Unity Play / Stop'),
+        row(this.kb('unity.play'), 'Unity 플레이 / 정지'),
         row(this.kb('papyrus.settings'), '설정'))));
   }
 
@@ -522,7 +554,7 @@ class App {
     enc.textContent = { utf8: 'UTF-8', utf8bom: 'UTF-8 BOM', cp949: 'CP949', utf16le: 'UTF-16 LE', utf16be: 'UTF-16 BE' }[tab.encoding] || tab.encoding;
     enc.title = tab.encoding === 'cp949' ? '저장하면 UTF-8(BOM)로 바뀌어요' : '';
     const o = m.getOptions();
-    ind.textContent = o.insertSpaces ? `${o.indentSize || o.tabSize} spaces` : 'Tab';
+    ind.textContent = o.insertSpaces ? `공백 ${o.indentSize || o.tabSize}칸` : '탭';
     const p = this.editors.editor.getPosition();
     if (p) this.onCursor(p);
   }
@@ -545,6 +577,12 @@ class App {
     this.startLsp();
   }
 
+  /** Unity writes the project files one by one: restart once after the last of them. */
+  restartLspSoon() {
+    clearTimeout(this.lspRestartTimer);
+    this.lspRestartTimer = setTimeout(() => this.restartLsp(), 2500);
+  }
+
   async installLsp() {
     this.panels.show('output');
     const ok = await O.lsp.install();
@@ -555,6 +593,7 @@ class App {
   }
 
   onLspStatus(st) {
+    this.lspState = st.state;
     const sb = document.getElementById('sb-lsp');
     const labels = {
       starting: ['loading', 'C# 시작 중', 'spin'],
@@ -614,9 +653,15 @@ class App {
       const [u, pos] = args;
       const path = cv.uriToPath(typeof u === 'string' ? u : (u && u.uri) || uri);
       if (path && pos) {
+        const at = popupPoint(this.editors.editor); // the lens that was clicked, before the caret moves
         await this.editors.open(path, { line: pos.line + 1, column: pos.character + 1 });
-        this.findUsages();
+        this.findUsages({ at });
       }
+      return;
+    }
+    if (name === 'papyrus.showImplementations') {
+      const [u, pos] = args;
+      this.showImplementations({ uri: u, pos, at: popupPoint(this.editors.editor) });
       return;
     }
     if (/nestedCodeAction|fixAllCodeAction/.test(name)) {
@@ -629,11 +674,16 @@ class App {
     }
   }
 
-  async findUsages() {
+  /**
+   * Usages of the symbol at the caret. Opens a popup at the click point / caret (Rider's
+   * "Show Usages"); `panel: true` puts them in the bottom Find panel instead.
+   */
+  async findUsages({ at, panel = false, position } = {}) {
     const ed = this.editors.editor;
     const m = ed.getModel();
     if (!m) return;
-    const pos = ed.getPosition();
+    at = at || popupPoint(ed);
+    const pos = position || ed.getPosition();
     const w = m.getWordAtPosition(pos);
     if (!this.lsp.running) {
       // fall back to text search
@@ -641,18 +691,77 @@ class App {
       return;
     }
     const refs = await this.lsp.references(m, pos);
+    const name = w ? w.word : '';
     if (!refs.length) {
-      toast({ title: '사용처 없음', message: w ? w.word : '', timeout: 2500 });
+      toast({ title: '사용처 없음', message: name, timeout: 2500 });
       return;
     }
-    if (refs.length === 1) {
-      const r = refs[0];
-      const path = cv.uriToPath(r.uri);
-      if (path) this.editors.open(path, { line: r.range.start.line + 1, column: r.range.start.character + 1 });
+    const toPanel = () => { this.panels.show('find'); this.panels.views.find.showUsages(name, refs); };
+    if (panel) { toPanel(); return; }
+    if (refs.length === 1) { this.openLocation(refs[0]); return; }
+    showLocationPopup({
+      title: `'${name}' 사용처 ${refs.length}개`,
+      locations: refs,
+      at,
+      project: this.project,
+      currentPath: this.editors.active && this.editors.active.path,
+      onPick: (path, line, column) => this.editors.open(path, { line, column }),
+      onPanel: toPanel,
+    });
+  }
+
+  /** Derived types / implementations / overrides, in the same popup. Defaults to the caret. */
+  async showImplementations({ uri, pos, at } = {}) {
+    const ed = this.editors.editor;
+    at = at || popupPoint(ed);
+    if (!uri) {
+      const m = ed.getModel();
+      if (!m) return;
+      uri = m.uri.toString();
+      pos = cv.toPos(ed.getPosition());
+    }
+    if (!this.lsp.running) return;
+    const locs = await this.lsp.implementations(uri, pos);
+    const model = monaco.editor.getModel(monaco.Uri.parse(uri));
+    const w = model && model.getWordAtPosition({ lineNumber: pos.line + 1, column: pos.character + 1 });
+    const name = w ? w.word : '';
+    if (!locs.length) {
+      toast({ title: '구현·상속 없음', message: name, timeout: 2500 });
       return;
     }
-    this.panels.show('find');
-    this.panels.views.find.showUsages(w ? w.word : '', refs);
+    if (locs.length === 1) { this.openLocation(locs[0]); return; }
+    showLocationPopup({
+      title: `'${name}' 구현·상속 ${locs.length}개`,
+      locations: locs,
+      at,
+      project: this.project,
+      currentPath: this.editors.active && this.editors.active.path,
+      onPick: (path, line, column) => this.editors.open(path, { line, column }),
+    });
+  }
+
+  // Ctrl+click on a declaration shows its usages at the click point (Monaco's own fallback opens
+  // the inline peek below the line; that's switched off in the editor options).
+  attachCtrlClickUsages(editor) {
+    editor.onMouseUp(async (e) => {
+      const ev = e.event;
+      if (!(ev.ctrlKey || ev.metaKey) || !ev.leftButton || ev.shiftKey || ev.altKey) return;
+      if (e.target.type !== monaco.editor.MouseTargetType.CONTENT_TEXT || !e.target.position) return;
+      const model = editor.getModel();
+      if (!model || model.getLanguageId() !== 'csharp' || !this.lsp.running) return;
+      const position = e.target.position;
+      const at = { x: ev.browserEvent.clientX, y: ev.browserEvent.clientY + 10 };
+      const defs = await this.lsp.definitionAt(model, position).catch(() => []);
+      const here = model.uri.toString();
+      const onDecl = defs.some((d) => monaco.Uri.parse(d.uri).toString() === here
+        && cv.toRange(d.range).containsPosition(position));
+      if (onDecl && editor.getModel() === model) this.findUsages({ at, position });
+    });
+  }
+
+  openLocation(l) {
+    const path = cv.uriToPath(l.uri);
+    if (path) this.editors.open(path, { line: l.range.start.line + 1, column: l.range.start.character + 1 });
   }
 
   findInFiles() {
@@ -683,7 +792,7 @@ class App {
     for (const id of ['btn-play', 'btn-pause', 'btn-step', 'btn-refresh']) document.getElementById(id).disabled = !connected;
     const play = document.getElementById('btn-play');
     play.classList.toggle('playing', !!s.isPlaying);
-    play.title = `${s.isPlaying ? 'Stop' : 'Play'} (${this.kb('unity.play')})`;
+    play.title = `${s.isPlaying ? '정지' : '플레이'} (${this.kb('unity.play')})`;
     play.querySelector('.codicon').className = 'codicon codicon-' + (s.isPlaying ? 'debug-stop' : 'play');
     document.getElementById('btn-pause').classList.toggle('paused', !!s.isPaused);
     const sbu = document.getElementById('sb-unity');
@@ -723,8 +832,57 @@ class App {
     if (this.settings['unity.refreshOnSave'] !== false && /\.(cs|shader|hlsl|cginc|compute|asmdef|asmref|uss|uxml|json)$/i.test(tab.path)) this.unityRefreshSoon();
   }
 
+  /**
+   * Request/response over the Unity bridge: sends {type, id, ...params} and resolves the "data" of
+   * Unity's {type:'reply', id} (PapyrusInspector.cs). Rejects with err.code 'disconnected' |
+   * 'timeout' | 'notReady' (Unity compiling / not imported yet) or Unity's error message.
+   */
+  unityRequest(type, params = {}, timeout = 10000) {
+    const fail = (message, code) => Promise.reject(Object.assign(new Error(message), { code }));
+    if (this.unityStatus.state !== 'connected') return fail('Unity와 연결돼 있지 않아요.', 'disconnected');
+    if (!this.unityPending) this.unityPending = new Map();
+    const id = (this.unityReqId = (this.unityReqId || 0) + 1);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.unityPending.delete(id);
+        reject(Object.assign(new Error('Unity가 응답하지 않아요. 컴파일 중이거나 Unity 창이 바쁜 것 같아요.'), { code: 'timeout' }));
+      }, timeout);
+      this.unityPending.set(id, { resolve, reject, timer });
+      O.unity.send({ ...params, type, id });
+    });
+  }
+
+  rejectUnityRequests(message) {
+    if (!this.unityPending) return;
+    for (const [id, p] of this.unityPending) {
+      clearTimeout(p.timer);
+      p.reject(Object.assign(new Error(message), { code: 'disconnected' }));
+      this.unityPending.delete(id);
+    }
+  }
+
+  onUnityReply(msg) {
+    const p = this.unityPending && this.unityPending.get(msg.id);
+    if (!p) return;
+    this.unityPending.delete(msg.id);
+    clearTimeout(p.timer);
+    if (msg.ok) {
+      const data = msg.data;
+      if (data && typeof data === 'object' && typeof msg.playMode === 'boolean') data.playMode = msg.playMode;
+      p.resolve(data);
+    } else {
+      p.reject(Object.assign(new Error(msg.error || 'Unity에서 실패했어요.'), { code: msg.code || 'error' }));
+    }
+  }
+
   onUnityMessage(msg) {
     const log = this.panels.views.unity;
+    if (msg.type === 'reply') {
+      this.onUnityReply(msg);
+      return;
+    }
+    const t = msg.type || '';
+    if (t.startsWith('inspector.') || t === 'compileFinished' || t === 'state') this.inspector.onUnityMessage(msg);
     switch (msg.type) {
       case 'log':
         log.add(msg);
@@ -745,7 +903,12 @@ class App {
         break;
       case 'compileFinished':
         if (msg.errors > 0) {
-          toast({ kind: 'error', title: `Unity 컴파일 에러 ${msg.errors}개`, message: '', actions: [{ label: 'Unity Log 보기', action: () => this.panels.show('unity') }], timeout: 5000 });
+          toast({ kind: 'error', title: `Unity 컴파일 에러 ${msg.errors}개`, message: '', actions: [{ label: 'Unity 로그 보기', action: () => this.panels.show('unity') }], timeout: 5000 });
+        }
+        // a package was added or updated: its DLL (referenced by the projects) only exists now
+        if (this.packagesChanged) {
+          this.packagesChanged = false;
+          this.restartLspSoon();
         }
         break;
       case 'projectFilesSynced':
@@ -830,7 +993,9 @@ class App {
         el('div.ver', null, `버전 ${this.version || ''} · Electron ${this.electronVersion || ''}`),
         el('div.credits', null, 'Unity용 가벼운 C# IDE', el('br'),
           'Monaco Editor (MIT) · Roslyn Language Server (MIT)', el('br'),
-          'Microsoft.Unity.Analyzers (MIT) · JetBrains Mono / Inter (OFL)'),
+          'Microsoft.Unity.Analyzers (MIT) · JetBrains Mono / Inter (OFL)', el('br'),
+          'Codicons © Microsoft (CC BY 4.0)', el('br'),
+          '전체 라이선스: 설치 폴더의 THIRD_PARTY_NOTICES.txt'),
         el('div.row', { style: { justifyContent: 'center' } },
           el('button.btn', { onclick: () => { back.remove(); this.updates.check(); } }, icon('cloud-download'), '업데이트 확인'),
           el('button.btn.primary', { onclick: () => back.remove() }, '닫기'))));
@@ -928,9 +1093,9 @@ class App {
 
     // ---- 이동 / 검색
     let cat = { category: '이동' };
-    G('workbench.quickOpen', '파일로 이동 (Quick Open)', 'Ctrl+P', () => this.search.open('files'), { icon: 'go-to-file', ...cat });
+    G('workbench.quickOpen', '파일로 이동', 'Ctrl+P', () => this.search.open('files'), { icon: 'go-to-file', ...cat });
     G('workbench.commandPalette', '명령 팔레트', ['Ctrl+Shift+P', 'F1'], () => this.search.open('actions'), { icon: 'symbol-event', ...cat });
-    G('workbench.searchEverywhere', 'Search Everywhere', [], () => this.search.open('all'), { icon: 'search', ...cat });
+    G('workbench.searchEverywhere', '전체 검색', [], () => this.search.open('all'), { icon: 'search', ...cat });
     G('workbench.gotoSymbol', '작업 영역 심볼로 이동', 'Ctrl+T', () => this.search.open('symbols'), { icon: 'symbol-method', ...cat });
     G('workbench.gotoType', '타입으로 이동', [], () => this.search.open('types'), { icon: 'symbol-class', ...cat });
     G('workbench.recentFiles', '최근 파일', 'Ctrl+E', () => this.search.open('recent'), { icon: 'history', ...cat });
@@ -938,10 +1103,11 @@ class App {
     M('editor.action.quickOutline', '파일의 심볼로 이동', 'Ctrl+Shift+O', cat);
     M('editor.action.revealDefinition', '정의로 이동', 'F12', cat);
     M('editor.action.peekDefinition', '정의 미리 보기', 'Alt+F12', cat);
-    M('editor.action.goToImplementation', '구현으로 이동', 'Ctrl+F12', cat);
+    E('papyrus.showImplementations', '구현·상속으로 이동', 'Ctrl+F12', () => this.showImplementations(), cat);
     M('editor.action.goToTypeDefinition', '타입 정의로 이동', [], cat);
-    M('editor.action.referenceSearch.trigger', '참조 미리 보기', 'Shift+F12', cat);
-    E('papyrus.findUsages', '모든 참조 찾기 (Find Usages)', 'Shift+Alt+F12', () => this.findUsages(), cat);
+    E('papyrus.showUsages', '사용처 보기 (팝업)', 'Shift+F12', () => this.findUsages(), cat);
+    E('papyrus.findUsages', '모든 참조 찾기 (아래 패널)', 'Shift+Alt+F12', () => this.findUsages({ panel: true }), cat);
+    M('editor.action.referenceSearch.trigger', '참조 미리 보기 (인라인)', [], cat);
     M('editor.action.marker.next', '다음 문제', 'F8', cat);
     M('editor.action.marker.prev', '이전 문제', 'Shift+F8', cat);
     M('editor.action.jumpToBracket', '짝 괄호로 이동', 'Ctrl+Shift+\\', cat);
@@ -1005,34 +1171,52 @@ class App {
     G('papyrus.newScript', '새 C# 스크립트', 'Ctrl+N', () => this.newScriptHere(), { icon: 'new-file', ...cat });
     G('papyrus.openFolder', '폴더 열기', 'Ctrl+K Ctrl+O', () => this.pickProject(), { icon: 'folder-opened', ...cat });
     G('papyrus.newWindow', '새 창', 'Ctrl+Shift+N', () => O.app.newWindow(), { icon: 'empty-window', ...cat });
-    G('papyrus.revealInExplorer', 'Explorer에서 현재 파일 선택', [], () => this.editors.active && !this.editors.active.special && this.explorer.reveal(this.editors.active.path), { icon: 'target', ...cat });
+    G('papyrus.revealInExplorer', '탐색기에서 현재 파일 선택', [], () => this.editors.active && !this.editors.active.special && this.explorer.reveal(this.editors.active.path), { icon: 'target', ...cat });
 
     // ---- 보기
     cat = { category: '보기' };
     G('papyrus.toggleSidebar', '사이드바 전환', 'Ctrl+B', () => this.toggleSidebar(), { icon: 'layout-sidebar-left', ...cat });
     G('papyrus.togglePanel', '하단 패널 전환', 'Ctrl+J', () => this.togglePanel(), { icon: 'layout-panel', ...cat });
-    G('papyrus.showExplorer', 'Explorer', 'Ctrl+Shift+E', () => this.showTool('explorer'), { icon: 'files', ...cat });
-    G('papyrus.showStructure', 'Structure (구조)', [], () => this.toggleTool('structure'), { icon: 'symbol-structure', ...cat });
-    G('papyrus.showProblems', 'Problems', 'Ctrl+Shift+M', () => this.panels.toggle('problems'), { icon: 'warning', ...cat });
-    G('papyrus.showOutput', 'Output', 'Ctrl+Shift+U', () => this.panels.toggle('output'), { icon: 'output', ...cat });
-    G('papyrus.showUnityLog', 'Unity Log', 'Ctrl+Shift+Y', () => this.panels.toggle('unity'), { icon: 'debug-console', ...cat });
-    G('papyrus.showFind', 'Find 창', [], () => this.panels.toggle('find'), { icon: 'search', ...cat });
+    G('papyrus.showExplorer', '탐색기', 'Ctrl+Shift+E', () => this.showTool('explorer'), { icon: 'files', ...cat });
+    G('papyrus.searchExplorer', '탐색기에서 스크립트 검색', [], () => { this.showTool('explorer'); this.explorer.focusSearch(); }, { icon: 'search', ...cat });
+    G('papyrus.showStructure', '구조', [], () => this.toggleTool('structure'), { icon: 'symbol-structure', ...cat });
+    G('papyrus.showInspector', '인스펙터', 'Ctrl+Alt+I', () => this.inspector.toggleDock(), { icon: 'inspect', ...cat });
+    G('papyrus.showProblems', '문제', 'Ctrl+Shift+M', () => this.panels.toggle('problems'), { icon: 'warning', ...cat });
+    G('papyrus.showOutput', '출력', 'Ctrl+Shift+U', () => this.panels.toggle('output'), { icon: 'output', ...cat });
+    G('papyrus.showUnityLog', 'Unity 로그', 'Ctrl+Shift+Y', () => this.panels.toggle('unity'), { icon: 'debug-console', ...cat });
+    G('papyrus.showFind', '찾기 창', [], () => this.panels.toggle('find'), { icon: 'search', ...cat });
     G('papyrus.zenMode', '에디터만 보기 (툴 창 숨기기)', 'Ctrl+K Z', () => this.toggleMaximize(), { icon: 'screen-full', ...cat });
     G('papyrus.zoomIn', '글자 크게', ['Ctrl+=', 'Ctrl+Shift+='], () => this.zoom(1), { icon: 'zoom-in', ...cat });
     G('papyrus.zoomOut', '글자 작게', 'Ctrl+-', () => this.zoom(-1), { icon: 'zoom-out', ...cat });
     G('papyrus.zoomReset', '글자 크기 초기화', 'Ctrl+0', () => this.zoom(0), { icon: 'screen-normal', ...cat });
     G('papyrus.toggleTheme', '밝은/어두운 테마 전환', 'Ctrl+K Ctrl+T', () => this.setSetting('workbench.theme', this.effectiveTheme() === 'dark' ? 'light' : 'dark'), { icon: 'color-mode', ...cat });
+    G('papyrus.clearCodeMemory', '학습한 자동완성 기록 지우기', [], () => {
+      this.codeMemory.clear();
+      toast({ title: '자동완성', message: '학습한 줄·단어·스니펫 사용 기록을 지웠어요.', timeout: 3000 });
+    }, { icon: 'clear-all', ...cat });
 
     // ---- Unity
     cat = { category: 'Unity' };
-    G('unity.play', 'Unity Play / Stop', 'F5', () => this.unityPlay(), { icon: 'play', ...cat });
-    G('unity.stop', 'Unity Stop', 'Shift+F5', () => this.unityState.isPlaying && O.unity.send({ type: 'stop' }), { icon: 'debug-stop', ...cat });
-    G('unity.pause', 'Unity Pause', 'F6', () => O.unity.send({ type: 'pause' }), { icon: 'debug-pause', ...cat });
-    G('unity.step', 'Unity Step', 'F10', () => O.unity.send({ type: 'step' }), { icon: 'debug-step-over', ...cat });
+    G('unity.play', 'Unity 플레이 / 정지', 'F5', () => this.unityPlay(), { icon: 'play', ...cat });
+    G('unity.stop', 'Unity 정지', 'Shift+F5', () => this.unityState.isPlaying && O.unity.send({ type: 'stop' }), { icon: 'debug-stop', ...cat });
+    G('unity.pause', 'Unity 일시정지', 'F6', () => O.unity.send({ type: 'pause' }), { icon: 'debug-pause', ...cat });
+    G('unity.step', 'Unity 한 프레임 진행', 'F10', () => O.unity.send({ type: 'step' }), { icon: 'debug-step-over', ...cat });
     G('unity.refresh', 'Unity 에셋 새로고침', 'Ctrl+Alt+R', () => this.unityRefresh(true), { icon: 'refresh', ...cat });
     G('unity.sync', 'Unity 프로젝트 파일 다시 생성', [], () => O.unity.send({ type: 'sync' }), { icon: 'file-code', ...cat });
-    G('unity.clearLog', 'Unity Log 지우기', [], () => this.panels.views.unity.clear(), { icon: 'clear-all', ...cat });
+    G('unity.clearLog', 'Unity 로그 지우기', [], () => this.panels.views.unity.clear(), { icon: 'clear-all', ...cat });
     G('unity.installPackage', 'Unity 패키지 설치/업데이트', [], () => this.installUnityPackage(), { icon: 'package', ...cat });
+    G('unity.attachToSelected', '현재 스크립트를 선택한 오브젝트에 붙이기', [], () => {
+      const p = this.inspector.currentScript();
+      const sel = this.inspector.selected;
+      if (!p) toast({ kind: 'warn', title: '.cs 파일을 먼저 여세요', timeout: 2500 });
+      else if (!sel || typeof sel.id !== 'number') toast({ kind: 'warn', title: '인스펙터의 Unity 씬에서 오브젝트를 먼저 고르세요', timeout: 2500 });
+      else this.inspector.attachScript(sel.id, p);
+    }, { icon: 'symbol-class', ...cat });
+    G('unity.createObjectWithScript', '현재 스크립트로 새 오브젝트 만들기', [], () => {
+      const p = this.inspector.currentScript();
+      if (p) this.inspector.createObject({ scriptPath: p });
+      else toast({ kind: 'warn', title: '.cs 파일을 먼저 여세요', timeout: 2500 });
+    }, { icon: 'add', ...cat });
 
     // ---- C# / 기타
     cat = { category: 'C#' };
@@ -1055,7 +1239,8 @@ class App {
     const base = this.settings['editor.fontSize'] || 13;
     const cur = this.editors.editor.getOption(monaco.editor.EditorOption.fontSize);
     const size = dir === 0 ? base : Math.max(8, Math.min(40, cur + dir));
-    this.editors.editor.updateOptions({ fontSize: size, lineHeight: Math.round(size * (this.settings['editor.lineHeight'] || 1.45)) });
+    const lineHeight = Math.round(size * (this.settings['editor.lineHeight'] || 1.45));
+    this.editors.editor.updateOptions({ fontSize: size, lineHeight, suggestFontSize: size, suggestLineHeight: lineHeight });
   }
 
   setupKeys() {
@@ -1084,14 +1269,24 @@ class App {
   effectiveTheme() {
     const t = this.settings['workbench.theme'] || 'dark';
     if (t === 'system') return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    return t === 'light' ? 'light' : 'dark';
+    return t === 'light' ? 'light' : 'dark'; // 'rainbow' is a dark theme
+  }
+
+  isRainbow() {
+    return this.settings['workbench.theme'] === 'rainbow';
+  }
+
+  monacoTheme() {
+    if (this.isRainbow()) return 'papyrus-rainbow';
+    return this.effectiveTheme() === 'light' ? 'papyrus-light' : 'papyrus-dark';
   }
 
   applyTheme() {
     const t = this.effectiveTheme();
     document.body.classList.toggle('light', t === 'light');
-    monaco.editor.setTheme(t === 'light' ? 'papyrus-light' : 'papyrus-dark');
-    O.app.setTheme(t, this.settings['workbench.theme'] || 'dark');
+    document.body.classList.toggle('rainbow', this.isRainbow());
+    monaco.editor.setTheme(this.monacoTheme());
+    O.app.setTheme(this.isRainbow() ? 'rainbow' : t, this.settings['workbench.theme'] || 'dark');
   }
 
   async setSetting(key, value) {
@@ -1121,9 +1316,10 @@ class App {
       this.unityStatus = st;
       if (st.state !== 'connected') this.unityState = {};
       this.renderUnity();
+      this.inspector.onStatus(st, was);
       if (this.panels.current === 'unity' && !this.panels.views.unity.logs.length) this.panels.views.unity.render();
-      // keep .sln/.csproj current whenever Unity (re)connects
-      if (st.state === 'connected' && was !== 'connected') O.unity.send({ type: 'sync' });
+      // Bootstrap a missing solution. Once selected, Unity's external editor handles asset changes.
+      if (st.state === 'connected' && was !== 'connected' && !this.slnAtStart) O.unity.send({ type: 'sync' });
       if (st.state === 'connected' && was !== 'connected' && !this.announcedUnity) {
         this.announcedUnity = true;
         toast({ title: 'Unity와 연결됐어요', message: `${st.projectName || ''} · Unity ${st.unityVersion || ''}`, timeout: 2500 });
@@ -1133,6 +1329,7 @@ class App {
     O.fs.onChanged(async (changes) => {
       const paths = changes.map((c) => c.path);
       this.explorer.refresh(paths);
+      this.inspector.onFilesChanged(paths);
       this.editors.onExternalChange(paths);
       // keep the file index fresh
       const added = [];
@@ -1142,11 +1339,14 @@ class App {
         if (!st) this.fileIndex = this.fileIndex.filter((f) => !samePath(f, p));
       }
       this.fileIndex.push(...added);
-      // Unity generated the solution for the first time -> load it
-      if (!this.slnAtStart && paths.some((p) => samePath(dirname(p), this.project) && extname(p) === '.sln')) {
+      // Unity (re)generated the solution or project files: a package was added (DOTween, UniTask...),
+      // the package settings in Preferences changed, an asmdef moved... -> reload them in the language server
+      const projectFiles = paths.some((p) => samePath(dirname(p), this.project) && /^\.(sln|slnx|csproj)$/i.test(extname(p)));
+      if (projectFiles) {
         this.slnAtStart = true;
-        setTimeout(() => this.restartLsp(), 1500);
+        this.restartLspSoon();
       }
+      if (paths.some((p) => /[\\/]Packages[\\/](manifest|packages-lock)\.json$/i.test(p))) this.packagesChanged = true;
     });
     window.addEventListener('beforeunload', () => this.saveSession());
     // Drop a folder onto the window to open it

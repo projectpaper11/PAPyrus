@@ -4,11 +4,11 @@ import * as cv from './conv.js';
 import { el, icon, basename, dirname, relPath, fileIcon, fuzzy, highlight, debounce } from './ui.js';
 
 const TABS = [
-  { id: 'all', label: 'All' },
-  { id: 'types', label: 'Types' },
-  { id: 'files', label: 'Files' },
-  { id: 'symbols', label: 'Symbols' },
-  { id: 'actions', label: 'Actions' },
+  { id: 'all', label: '전체' },
+  { id: 'types', label: '타입' },
+  { id: 'files', label: '파일' },
+  { id: 'symbols', label: '심볼' },
+  { id: 'actions', label: '명령' },
 ];
 const TYPE_KINDS = new Set([5, 10, 11, 23, 26]);
 
@@ -40,7 +40,7 @@ export class SearchEverywhere {
     this.recentMode = tab === 'recent';
     if (this.recentMode) this.tab = 'files';
     const sel = this.app.editors.editor.getModel() ? this.app.editors.editor.getModel().getValueInRange(this.app.editors.editor.getSelection()) : '';
-    this.input = el('input', { placeholder: this.recentMode ? '최근 파일' : '파일, 타입, 심볼, 액션 검색', spellcheck: 'false' });
+    this.input = el('input', { placeholder: this.recentMode ? '최근 파일' : '파일, 타입, 심볼, 명령 검색', spellcheck: 'false' });
     this.input.value = initial != null ? initial : sel && !sel.includes('\n') ? sel : (this.lastQuery || '');
     this.tabsEl = el('div.se-tabs');
     this.list = el('div.se-list');
@@ -75,7 +75,7 @@ export class SearchEverywhere {
 
   renderTabs() {
     this.tabsEl.replaceChildren(...(this.recentMode
-      ? [el('button.se-tab.active', null, 'Recent Files')]
+      ? [el('button.se-tab.active', null, '최근 파일')]
       : TABS.map((t) => el('button.se-tab' + (t.id === this.tab ? '.active' : ''), { onclick: () => this.setTab(t.id) }, t.label))),
     el('span.se-hint', null, this.recentMode ? '최근 파일' : 'Tab으로 탭 전환'));
   }
@@ -181,10 +181,10 @@ export class SearchEverywhere {
       if (!q) {
         groups.push(['최근 파일', this.app.recentFiles.slice(0, 12).map((p) => ({ type: 'file', path: p, name: basename(p), positions: [] }))]);
       } else {
-        groups.push(['Types', symItems((s) => TYPE_KINDS.has(s.kind)).slice(0, 8)]);
-        groups.push(['Files', this.fileItems(q).slice(0, 10)]);
-        groups.push(['Symbols', symItems((s) => !TYPE_KINDS.has(s.kind)).slice(0, 10)]);
-        groups.push(['Actions', this.actionItems(q).slice(0, 5)]);
+        groups.push(['타입', symItems((s) => TYPE_KINDS.has(s.kind)).slice(0, 8)]);
+        groups.push(['파일', this.fileItems(q).slice(0, 10)]);
+        groups.push(['심볼', symItems((s) => !TYPE_KINDS.has(s.kind)).slice(0, 10)]);
+        groups.push(['명령', this.actionItems(q).slice(0, 5)]);
       }
     }
     this.groups = groups.filter(([, items]) => items.length);

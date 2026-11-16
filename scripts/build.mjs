@@ -2,10 +2,13 @@
 import * as esbuild from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { buildDevLauncher } from './dev-launcher.mjs';
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const r = (...p) => path.join(root, ...p);
 const watch = process.argv.includes('--watch');
+buildDevLauncher(root);
 
 // 1) Generate Monaco contribution imports from editor.main.js, minus the bundled
 //    TS/CSS/HTML/JSON language services and the built-in lsp client (we ship our own).
@@ -45,4 +48,8 @@ if (watch) {
   for (const b of builds) (await esbuild.context(b)).watch();
 } else {
   await Promise.all(builds.map((b) => esbuild.build(b)));
+  // Keep the license notices in sync with what ships (no-op when nothing changed).
+  const { writeNotices } = await import('./notices.mjs');
+  const { count } = writeNotices();
+  console.log(`  THIRD_PARTY_NOTICES.txt  ${count} packages`);
 }

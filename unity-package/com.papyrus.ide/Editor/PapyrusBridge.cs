@@ -19,8 +19,8 @@ namespace Papyrus.Ide.Editor
     /// <summary>
     /// Localhost TCP bridge between the Unity Editor and PAPyrus.
     /// Protocol: one JSON object per line, UTF-8.
-    ///   Unity -> IDE: log, history, state, playStarting, compileFinished, open, projectFilesSynced
-    ///   IDE -> Unity: hello, play, stop, pause, step, refresh, sync
+    ///   Unity -> IDE: log, history, state, playStarting, compileFinished
+    ///   IDE -> Unity: hello, play, stop, pause, step, refresh, sync, inspector.* (answered with "reply")
     /// The port is written to Temp/PAPyrus/bridge.json after every domain reload.
     /// </summary>
     [InitializeOnLoad]
@@ -41,8 +41,6 @@ namespace Papyrus.Ide.Editor
         static bool s_LastPlaying, s_LastPaused, s_LastCompiling;
         static bool s_StateDirty = true;
         static int s_CompileErrors, s_CompileWarnings;
-
-        public static int Port { get { return s_Port; } }
 
         public static int ConnectedClients
         {
@@ -340,12 +338,37 @@ namespace Papyrus.Ide.Editor
             }
         }
 
+#pragma warning disable 0649 // filled by JsonUtility
         [Serializable]
-        class Command
+        internal class Command
         {
             public string type;
             public int pid;
+            // inspector.* requests (see PapyrusInspector)
+            public int id;
+            public int target;
+            public int parent;
+            public string path;
+            public string script;
+            public string name;
+            public string value;
+            // inspector.mirror* (see PapyrusInspectorMirror)
+            public float width;
+            public float height;
+            public float x;
+            public float y;
+            public float dx;
+            public float dy;
+            public int button;
+            public int clicks;
+            public int mods;
+            public string key;
+            public string chr;
+            // inspector.mirrorPlace: the IDE window and whether its inspector area is showing
+            public long hwnd;
+            public bool visible;
         }
+#pragma warning restore 0649
 
         static int s_IdePid;
 
@@ -362,6 +385,9 @@ namespace Papyrus.Ide.Editor
             }
 
             if (cmd == null || string.IsNullOrEmpty(cmd.type))
+                return;
+
+            if (PapyrusInspector.Handle(cmd))
                 return;
 
             switch (cmd.type)
@@ -396,19 +422,10 @@ namespace Papyrus.Ide.Editor
 
         // ------------------------------------------------------------------------------ API
 
-        /// <summary>Ask a connected IDE to open a file. Returns false if no IDE is connected.</summary>
-        public static bool TryOpen(string file, int line, int column)
+        /// <summary>Send one JSON message to every connected IDE.</summary>
+        public static void Send(string json)
         {
-            if (!s_Running || ConnectedClients == 0)
-                return false;
-            AllowForeground();
-            Broadcast("{\"type\":\"open\",\"file\":" + Json.Str(file) + ",\"line\":" + line + ",\"column\":" + column + "}");
-            return true;
-        }
-
-        public static void NotifyProjectFilesSynced()
-        {
-            Broadcast("{\"type\":\"projectFilesSynced\"}");
+            Broadcast(json);
         }
 
 #if UNITY_EDITOR_WIN

@@ -114,7 +114,7 @@ class UnityLogView {
   constructor(app, panels) {
     this.app = app;
     this.panels = panels;
-    this.title = 'Unity Log';
+    this.title = 'Unity 로그';
     this.logs = [];
     this.filters = { error: true, warning: true, log: true };
     this.collapse = false;
@@ -174,7 +174,7 @@ class UnityLogView {
       toggleBtn(String(c.error), 'error', this.filters.error, () => { this.filters.error = !this.filters.error; this.render(); this.panels.refreshActions(); }, '에러'),
       toggleBtn(String(c.warning), 'warning', this.filters.warning, () => { this.filters.warning = !this.filters.warning; this.render(); this.panels.refreshActions(); }, '경고'),
       toggleBtn(String(c.log), 'info', this.filters.log, () => { this.filters.log = !this.filters.log; this.render(); this.panels.refreshActions(); }, '로그'),
-      toggleBtn('Collapse', null, this.collapse, () => { this.collapse = !this.collapse; this.render(); this.panels.refreshActions(); }, '같은 메시지 묶기'),
+      toggleBtn('묶기', null, this.collapse, () => { this.collapse = !this.collapse; this.render(); this.panels.refreshActions(); }, '같은 메시지 묶기'),
       el('button.tb-btn.icon.small', { title: '지우기', onclick: () => this.clear() }, icon('clear-all')),
     ];
   }
@@ -253,7 +253,7 @@ class ProblemsView {
   constructor(app, panels) {
     this.app = app;
     this.panels = panels;
-    this.title = 'Problems';
+    this.title = '문제';
     this.el = el('div.reslist');
     this.renderSoon = debounce(() => this.render(), 150);
     monaco.editor.onDidChangeMarkers(() => {
@@ -315,7 +315,7 @@ class FindView {
   constructor(app, panels) {
     this.app = app;
     this.panels = panels;
-    this.title = 'Find';
+    this.title = '찾기';
     this.opts = { matchCase: false, wholeWord: false, regex: false };
     this.results = [];
     this.header = '';
@@ -423,7 +423,7 @@ class OutputView {
   constructor(app, panels) {
     this.app = app;
     this.panels = panels;
-    this.title = 'Output';
+    this.title = '출력';
     this.lines = [];
     this.el = el('div.output');
     this.renderSoon = debounce(() => this.render(), 80);

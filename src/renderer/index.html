@@ -21,13 +21,13 @@
         <div class="tb-unity" id="unity-widget">
           <span class="unity-dot" id="unity-dot"></span>
           <span class="unity-label" id="unity-label">Unity</span>
-          <button class="tb-btn icon" id="btn-play" title="Play (F5)"><i class="codicon codicon-play"></i></button>
-          <button class="tb-btn icon" id="btn-pause" title="Pause"><i class="codicon codicon-debug-pause"></i></button>
-          <button class="tb-btn icon" id="btn-step" title="Step"><i class="codicon codicon-debug-step-over"></i></button>
+          <button class="tb-btn icon" id="btn-play" title="플레이 (F5)"><i class="codicon codicon-play"></i></button>
+          <button class="tb-btn icon" id="btn-pause" title="일시정지"><i class="codicon codicon-debug-pause"></i></button>
+          <button class="tb-btn icon" id="btn-step" title="한 프레임 진행"><i class="codicon codicon-debug-step-over"></i></button>
           <span class="tb-sep"></span>
           <button class="tb-btn icon" id="btn-refresh" title="Unity 에셋 새로고침 (Ctrl+Alt+R)"><i class="codicon codicon-refresh"></i></button>
         </div>
-        <button class="tb-btn icon" id="btn-search" title="Search Everywhere (Shift 두 번)"><i class="codicon codicon-search"></i></button>
+        <button class="tb-btn icon" id="btn-search" title="전체 검색 (Shift 두 번)"><i class="codicon codicon-search"></i></button>
         <button class="tb-btn icon" id="btn-settings" title="설정 (Ctrl+,)"><i class="codicon codicon-settings-gear"></i></button>
         <div class="tb-wc-space"></div>
       </div>
@@ -36,14 +36,14 @@
     <div id="body">
       <nav id="stripe">
         <div class="stripe-top">
-          <button class="stripe-btn active" data-tool="explorer" title="Explorer (Ctrl+Shift+E)"><i class="codicon codicon-folder"></i></button>
-          <button class="stripe-btn" data-tool="structure" title="Structure"><i class="codicon codicon-symbol-structure"></i></button>
+          <button class="stripe-btn active" data-tool="explorer" title="탐색기 (Ctrl+Shift+E)"><i class="codicon codicon-folder"></i></button>
+          <button class="stripe-btn" data-tool="structure" title="구조"><i class="codicon codicon-symbol-structure"></i></button>
         </div>
         <div class="stripe-bottom">
-          <button class="stripe-btn" data-panel="unity" title="Unity Log (Ctrl+Shift+Y)"><i class="codicon codicon-output"></i><span class="stripe-badge" id="badge-unity"></span></button>
-          <button class="stripe-btn" data-panel="problems" title="Problems (Ctrl+Shift+M)"><i class="codicon codicon-warning"></i><span class="stripe-badge" id="badge-problems"></span></button>
-          <button class="stripe-btn" data-panel="find" title="Find (Ctrl+Shift+F)"><i class="codicon codicon-search"></i></button>
-          <button class="stripe-btn" data-panel="output" title="Output (Ctrl+Shift+U)"><i class="codicon codicon-terminal"></i></button>
+          <button class="stripe-btn" data-panel="unity" title="Unity 로그 (Ctrl+Shift+Y)"><i class="codicon codicon-output"></i><span class="stripe-badge" id="badge-unity"></span></button>
+          <button class="stripe-btn" data-panel="problems" title="문제 (Ctrl+Shift+M)"><i class="codicon codicon-warning"></i><span class="stripe-badge" id="badge-problems"></span></button>
+          <button class="stripe-btn" data-panel="find" title="찾기 (Ctrl+Shift+F)"><i class="codicon codicon-search"></i></button>
+          <button class="stripe-btn" data-panel="output" title="출력 (Ctrl+Shift+U)"><i class="codicon codicon-terminal"></i></button>
         </div>
       </nav>
 
@@ -51,7 +51,7 @@
         <div id="workspace">
           <aside id="sidebar">
             <div class="tw-header">
-              <span class="tw-title" id="sidebar-title">Explorer</span>
+              <span class="tw-title" id="sidebar-title">탐색기</span>
               <span class="tw-sub" id="sidebar-sub"></span>
               <div class="tw-actions" id="sidebar-actions"></div>
             </div>
@@ -65,6 +65,15 @@
             <div id="welcome"></div>
             <div id="nontext"></div>
           </section>
+          <div class="resizer v hidden" id="resizer-right"></div>
+          <aside id="rightbar" class="hidden">
+            <div class="tw-header">
+              <span class="tw-title" id="rightbar-title">인스펙터</span>
+              <span class="tw-sub" id="rightbar-sub"></span>
+              <div class="tw-actions" id="rightbar-actions"></div>
+            </div>
+            <div class="tw-body" id="rightbar-body"></div>
+          </aside>
         </div>
         <div class="resizer h" id="resizer-bottom"></div>
         <section id="bottom">
@@ -76,6 +85,11 @@
           <div class="tw-body" id="bottom-body"></div>
         </section>
       </div>
+      <nav id="stripe-right">
+        <div class="stripe-top">
+          <button class="stripe-btn" id="btn-inspector" title="인스펙터 (Ctrl+Alt+I)"><i class="codicon codicon-inspect"></i></button>
+        </div>
+      </nav>
     </div>
 
     <footer id="statusbar">

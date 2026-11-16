@@ -50,21 +50,41 @@ function which(cmd) {
   return null;
 }
 
+// Node can't spawn .cmd/.bat without a shell (EINVAL), and newer dotnet tools install
+// a .cmd shim instead of an .exe. Read the shim and return the .exe it launches.
+function resolveShim(cmd) {
+  if (!isWin || !/\.(cmd|bat)$/i.test(cmd)) return cmd;
+  try {
+    const m = fs.readFileSync(cmd, 'utf8').match(/"%~dp0([^"]+\.exe)"/i);
+    if (m) {
+      const exe = path.join(path.dirname(cmd), m[1]);
+      if (fs.existsSync(exe)) return exe;
+    }
+  } catch { /* ignore */ }
+  return cmd;
+}
+
 function findRoslyn() {
-  const name = isWin ? 'roslyn-language-server.exe' : 'roslyn-language-server';
   const toolDir = path.join(os.homedir(), '.dotnet', 'tools');
-  const p = path.join(toolDir, name);
-  if (fs.existsSync(p)) return p;
-  return which('roslyn-language-server');
+  const names = isWin ? ['roslyn-language-server.exe', 'roslyn-language-server.cmd'] : ['roslyn-language-server'];
+  for (const name of names) {
+    const p = path.join(toolDir, name);
+    if (fs.existsSync(p)) return resolveShim(p);
+  }
+  const found = which('roslyn-language-server');
+  return found && resolveShim(found);
 }
 
 function resolveServer(settings, root) {
   const configured = settings['lsp.path'];
   const extra = Array.isArray(settings['lsp.args']) ? settings['lsp.args'] : [];
   let command = null;
-  if (configured && configured !== 'auto') command = configured;
+  if (configured && configured !== 'auto') command = resolveShim(configured);
   else command = findRoslyn();
   if (!command) return null;
+  if (isWin && /\.(cmd|bat)$/i.test(command)) {
+    return { error: `${path.basename(command)}에서 실행 파일(.exe)을 찾지 못했어요. 설정에서 C# 언어 서버 경로를 .exe로 지정해 주세요.` };
+  }
 
   const base = path.basename(command).toLowerCase();
   const isOmni = base.includes('omnisharp');
@@ -195,6 +215,10 @@ class LspServer {
     if (!server) {
       this.status('missing', 'roslyn-language-server를 찾을 수 없어요');
       return { ok: false, missing: true };
+    }
+    if (server.error) {
+      this.status('error', server.error);
+      return { ok: false, error: server.error };
     }
     this.kind = server.kind;
 

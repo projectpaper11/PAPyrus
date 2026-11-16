@@ -1,4 +1,7 @@
 // Monaco bootstrap: core contributions, a few Monarch grammars and the Rider-like theme.
+// Korean UI strings for Monaco's own menus/widgets (context menu, find, rename, peek...).
+// Must load before any Monaco module: it fills the message table they read on import.
+import 'monaco-editor/nls/lang/ko.js';
 import './generated/monaco-contribs.js';
 import * as monaco from 'monaco-editor/editor/editor.api.js';
 
@@ -87,10 +90,7 @@ const C = {
   label: 'BDBDBD',
 };
 
-monaco.editor.defineTheme('papyrus-dark', {
-  base: 'vs-dark',
-  inherit: true,
-  rules: [
+const DARK_RULES = [
     { token: '', foreground: C.text },
     { token: 'keyword', foreground: C.keyword },
     { token: 'keyword.directive', foreground: C.preproc },
@@ -155,8 +155,9 @@ monaco.editor.defineTheme('papyrus-dark', {
     { token: 'xml-doc-comment-attribute-value', foreground: C.string },
     { token: 'static-symbol', fontStyle: 'italic' },
     { token: 'deprecated', fontStyle: 'strikethrough' },
-  ],
-  colors: {
+];
+
+const DARK_COLORS = {
     'editor.background': '#1E1F22',
     'editor.foreground': '#BDBDBD',
     'editorGutter.background': '#1E1F22',
@@ -223,6 +224,85 @@ monaco.editor.defineTheme('papyrus-dark', {
     'quickInput.background': '#2B2D30',
     'quickInputList.focusBackground': '#2E436E',
     'pickerGroup.foreground': '#6F737A',
+};
+
+monaco.editor.defineTheme('papyrus-dark', { base: 'vs-dark', inherit: true, rules: DARK_RULES, colors: DARK_COLORS });
+
+// ---------------------------------------------------------------- rainbow theme
+// Same token mapping as the dark theme, recolored in rainbow order:
+// keyword red, string orange, number yellow, method green, field cyan, type blue, struct violet.
+const RAINBOW = ['FF6B8B', 'FFA94D', 'FFE066', '7CE38B', '4FE3D2', '5CC8FF', 'B18CFF'];
+const RB = {
+  [C.keyword]: RAINBOW[0],
+  [C.string]: RAINBOW[1],
+  [C.number]: RAINBOW[2],
+  [C.method]: RAINBOW[3],
+  [C.field]: RAINBOW[4],
+  [C.cls]: RAINBOW[5],
+  [C.struct]: RAINBOW[6],
+  [C.comment]: '7E7A99',
+  [C.text]: 'E4E0F2',
+  [C.preproc]: '6B6785',
+  D688D4: 'FF8FE3',
+  '5D5D5D': '55516B',
+};
+const hex = (c) => `#${c}`;
+monaco.editor.defineTheme('papyrus-rainbow', {
+  base: 'vs-dark',
+  inherit: true,
+  rules: DARK_RULES.map((r) => (r.foreground && RB[r.foreground] ? { ...r, foreground: RB[r.foreground] } : r)),
+  colors: {
+    ...DARK_COLORS,
+    'editor.background': '#17151F',
+    'editor.foreground': '#E4E0F2',
+    'editorGutter.background': '#17151F',
+    'editorLineNumber.foreground': '#5A5670',
+    'editorLineNumber.activeForeground': '#FFE066',
+    'editor.lineHighlightBackground': '#211E2C',
+    'editor.lineHighlightBorder': '#211E2C00',
+    'editor.selectionBackground': '#4A3A7A',
+    'editor.inactiveSelectionBackground': '#33294F',
+    'editor.selectionHighlightBackground': '#7CE38B33',
+    'editor.wordHighlightBackground': '#5CC8FF2E',
+    'editor.wordHighlightStrongBackground': '#FF6B8B2E',
+    'editor.findMatchBackground': '#FFA94D66',
+    'editor.findMatchHighlightBackground': '#FFA94D33',
+    'editorCursor.foreground': hex(RAINBOW[0]),
+    'editorWhitespace.foreground': '#3A3550',
+    // one rainbow color per bracket depth and per indent level
+    ...Object.fromEntries(RAINBOW.slice(0, 6).map((c, i) => [`editorBracketHighlight.foreground${i + 1}`, hex(c)])),
+    ...Object.fromEntries(RAINBOW.slice(0, 6).map((c, i) => [`editorIndentGuide.background${i + 1}`, `${hex(c)}40`])),
+    ...Object.fromEntries(RAINBOW.slice(0, 6).map((c, i) => [`editorIndentGuide.activeBackground${i + 1}`, `${hex(c)}B0`])),
+    'editorBracketMatch.background': '#3A3550',
+    'editorInlayHint.background': '#241F33',
+    'editorInlayHint.foreground': '#9590B3',
+    'editorCodeLens.foreground': '#9590B3',
+    'editorOverviewRuler.border': '#17151F',
+    'editorWidget.background': '#211E2C',
+    'editorWidget.border': '#3A3550',
+    'editorSuggestWidget.background': '#211E2C',
+    'editorSuggestWidget.border': '#3A3550',
+    'editorSuggestWidget.selectedBackground': '#3A2F5C',
+    'editorSuggestWidget.highlightForeground': hex(RAINBOW[2]),
+    'editorSuggestWidget.focusHighlightForeground': hex(RAINBOW[2]),
+    'editorHoverWidget.background': '#211E2C',
+    'editorHoverWidget.border': '#3A3550',
+    'list.hoverBackground': '#2C2740',
+    'list.activeSelectionBackground': '#3A2F5C',
+    'list.focusBackground': '#3A2F5C',
+    'input.background': '#17151F',
+    'input.border': '#3A3550',
+    'focusBorder': hex(RAINBOW[6]),
+    'peekView.border': hex(RAINBOW[6]),
+    'peekViewEditor.background': '#17151F',
+    'peekViewResult.background': '#211E2C',
+    'peekViewTitle.background': '#211E2C',
+    'stickyScroll.background': '#17151F',
+    'stickyScrollHover.background': '#211E2C',
+    'menu.background': '#211E2C',
+    'menu.selectionBackground': '#8A5CF6',
+    'quickInput.background': '#211E2C',
+    'quickInputList.focusBackground': '#3A2F5C',
   },
 });
 

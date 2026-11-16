@@ -125,10 +125,18 @@ export function contextMenu(x, y, items) {
   });
 }
 
-export function prompt({ title, sub, value = '', select, placeholder, choices }) {
+/**
+ * Text input dialog. Resolves the string, or null when cancelled. With `choices` and/or `check`
+ * ({ label, checked, onChange }) it resolves { value, choice?, checked? } instead.
+ */
+export function prompt({ title, sub, value = '', select, placeholder, choices, check }) {
   return new Promise((resolve) => {
     const input = el('input', { type: 'text', value, placeholder: placeholder || '' });
     let choice = choices ? choices[0].value : null;
+    const box = check ? el('input', { type: 'checkbox', checked: !!check.checked, onchange: () => check.onChange && check.onChange(box.checked) }) : null;
+    const result = () => (choices || check
+      ? { value: input.value, ...(choices ? { choice } : {}), ...(check ? { checked: box.checked } : {}) }
+      : input.value);
     const finish = (v) => { back.remove(); resolve(v); };
     const choiceRow = choices
       ? el('div.choices', null, choices.map((c, i) => {
@@ -149,11 +157,12 @@ export function prompt({ title, sub, value = '', select, placeholder, choices })
         sub ? el('div.sub', null, sub) : null,
         choiceRow,
         input,
+        check ? el('label.dialog-check', null, box, check.label) : null,
         el('div.row', null,
           el('button.btn', { onclick: () => finish(null) }, '취소'),
-          el('button.btn.primary', { onclick: () => finish(choices ? { value: input.value, choice } : input.value) }, '확인'))));
+          el('button.btn.primary', { onclick: () => finish(result()) }, '확인'))));
     input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') finish(choices ? { value: input.value, choice } : input.value);
+      if (e.key === 'Enter') finish(result());
       if (e.key === 'Escape') finish(null);
       e.stopPropagation();
     });
@@ -174,7 +183,8 @@ export function toast({ title, message, kind = 'info', actions = [], timeout = 6
   const t = el(`div.toast.${kind}`, null, icon(ic), el('div.tbody', null,
     title ? el('div.ttitle', null, title) : null,
     message ? el('div.tmsg', null, message) : null,
-    actions.length ? el('div.tacts', null, actions.map((a) => el('span.link', { onclick: () => { t.remove(); a.action(); } }, a.label))) : null));
+    actions.length ? el('div.tacts', null, actions.map((a) => el('span.link', { onclick: () => { t.remove(); a.action(); } }, a.label))) : null),
+  el('button.toast-close', { title: '닫기', onclick: () => t.remove() }, icon('close')));
   toastWrap.append(t);
   if (timeout) setTimeout(() => t.remove(), timeout);
   return t;

@@ -64,6 +64,16 @@ async function listDir(dir, opts = {}) {
     if (hideProj && !d.isDirectory() && /\.(csproj|sln|slnx)$/i.test(d.name)) continue;
     out.push({ name: d.name, path: path.join(dir, d.name), dir: d.isDirectory() });
   }
+  // folders with nothing to show get no expand arrow (only .meta files count as nothing)
+  await Promise.all(out.filter((e) => e.dir).map(async (e) => {
+    try {
+      const inner = await fsp.readdir(e.path, { withFileTypes: true });
+      e.empty = !inner.some((d) => !isHidden(d.name) && !(d.isDirectory() && ex.has(d.name))
+        && !(hideProj && !d.isDirectory() && /\.(csproj|sln|slnx)$/i.test(d.name)));
+    } catch {
+      e.empty = false;
+    }
+  }));
   out.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) : a.dir ? -1 : 1));
   return out;
 }
@@ -221,6 +231,20 @@ function register(ipcMain, sessionFor) {
     await fsp.rename(from, to);
     // keep Unity .meta in sync so GUIDs survive the rename
     if (fs.existsSync(from + '.meta')) await fsp.rename(from + '.meta', to + '.meta');
+    return true;
+  });
+  // Copy a file or folder. Unity .meta files stay behind: a copy with the same GUID would clash,
+  // Unity gives the new files fresh ones.
+  ipcMain.handle('fs:copy', async (_e, { from, to }) => {
+    if (fs.existsSync(to)) throw new Error('이미 같은 이름이 있어요');
+    const norm = (p) => path.resolve(p).toLowerCase() + path.sep;
+    if (norm(to).startsWith(norm(from))) throw new Error('폴더를 자기 안으로 복사할 수는 없어요');
+    await fsp.cp(from, to, {
+      recursive: true,
+      errorOnExist: true,
+      force: false,
+      filter: (src) => !src.toLowerCase().endsWith('.meta'),
+    });
     return true;
   });
   ipcMain.handle('fs:trash', async (_e, p) => {

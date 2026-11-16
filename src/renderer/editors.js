@@ -34,7 +34,7 @@ export class Editors {
     const s = this.app.settings;
     this.editor = monaco.editor.create(this.host, {
       model: null,
-      theme: this.app.effectiveTheme() === 'light' ? 'papyrus-light' : 'papyrus-dark',
+      theme: this.app.monacoTheme(),
       automaticLayout: true,
       fontFamily: s['editor.fontFamily'],
       fontSize: s['editor.fontSize'],
@@ -63,9 +63,15 @@ export class Editors {
       acceptSuggestionOnCommitCharacter: true,
       tabCompletion: 'off',
       wordBasedSuggestions: 'off',
+      snippetSuggestions: 'bottom',
       suggestSelection: 'first',
+      // the list rows get exactly the editor's metrics (a smaller row clipped the labels)
+      suggestFontSize: s['editor.fontSize'],
+      suggestLineHeight: Math.round(s['editor.fontSize'] * s['editor.lineHeight']),
       suggest: {
         insertMode: 'insert',
+        // the first suggestion is always selected, so Tab (and Enter) completes it like in Rider / VS
+        selectionMode: 'always',
         showStatusBar: false,
         preview: false,
         localityBonus: true,
@@ -80,7 +86,7 @@ export class Editors {
       autoClosingBrackets: 'languageDefined',
       autoClosingQuotes: 'languageDefined',
       autoSurround: 'languageDefined',
-      bracketPairColorization: { enabled: false },
+      bracketPairColorization: { enabled: s['workbench.theme'] === 'rainbow' },
       guides: { indentation: true, bracketPairs: false, highlightActiveIndentation: true },
       stickyScroll: { enabled: s['editor.stickyScroll'] !== false, maxLineCount: 4 },
       glyphMargin: false,
@@ -98,13 +104,22 @@ export class Editors {
       lightbulb: { enabled: 'onCode' },
       hover: { delay: 400, sticky: true },
       definitionLinkOpensInPeek: false,
-      gotoLocation: { multipleDefinitions: 'peek', multipleReferences: 'peek' },
+      // Ctrl+click on a declaration: our usages popup (app.attachCtrlClickUsages), not the inline peek
+      gotoLocation: { multipleDefinitions: 'peek', multipleReferences: 'peek', alternativeDefinitionCommand: '' },
       unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: false },
       'workbench.colorTheme': undefined,
     });
 
+    // Monaco measures glyph widths once. JetBrains Mono is a web font that loads lazily, so the
+    // first measurement can use the fallback font (Consolas, narrower) and the caret/selection
+    // drift into the middle of the text. Re-measure once the editor fonts have actually loaded.
+    this.remeasureFonts(s);
+    document.fonts.addEventListener('loadingdone', () => monaco.editor.remeasureFonts());
+
     this.editor.onDidChangeCursorPosition((e) => this.app.onCursor(e.position));
     this.editor.onDidChangeModelLanguageConfiguration(() => this.app.updateStatus());
+    // Tab completes while the suggest list is open (added later, so it wins over Monaco's own Tab).
+    this.editor.addCommand(monaco.KeyCode.Tab, () => this.acceptSuggestionWithTab(), 'suggestWidgetVisible && textInputFocus');
 
     // Let Monaco navigation (Ctrl+click, F12, peek "open") route through our tabs.
     monaco.editor.registerEditorOpener({
@@ -123,6 +138,55 @@ export class Editors {
     });
   }
 
+  /**
+   * Monaco's own Tab only accepts a suggestion that is already focused. Roslyn marks most lists
+   * incomplete, so every keystroke re-queries and the widget sits in "loading" with nothing focused;
+   * a Tab in that moment fell through and inserted a tab. Here Tab waits for the refreshed list
+   * (briefly) and accepts its selected (or first) item; it only indents when there is nothing to pick.
+   */
+  acceptSuggestionWithTab() {
+    const ed = this.editor;
+    const ctl = ed.getContribution('editor.contrib.suggestController');
+    const widget = ctl && ctl.widget && ctl.widget.value;
+    const indent = () => ed.trigger('keyboard', 'tab', null);
+    if (!ctl || !widget || !ctl.model) return indent();
+    const accept = () => {
+      if (!widget.getFocusedItem()) widget.selectFirst();
+      if (widget.getFocusedItem()) ctl.acceptSelectedSuggestion(true, false);
+    };
+    if (widget.getFocusedItem()) return accept();
+    const LOADING = 1;
+    if (ctl.model.state === 0 /* idle */ || widget._state !== LOADING) {
+      // list open but nothing focused (e.g. selectionMode) -> first item; empty list -> plain indent
+      widget.selectFirst();
+      return widget.getFocusedItem() ? accept() : indent();
+    }
+    const version = ed.getModel() && ed.getModel().getAlternativeVersionId();
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      sub.dispose();
+      cancel.dispose();
+      clearTimeout(timer);
+      // only if nothing was typed meanwhile, otherwise the result belongs to another word
+      if (ok && ed.getModel() && ed.getModel().getAlternativeVersionId() === version) accept();
+    };
+    // registered after the controller's own listener, so the list is already shown when this runs
+    const sub = ctl.model.onDidSuggest(() => finish(true));
+    const cancel = ctl.model.onDidCancel((e) => { if (!e.retrigger) finish(false); });
+    const timer = setTimeout(() => finish(false), 1500);
+  }
+
+  async remeasureFonts(s) {
+    const font = `${s['editor.fontSize']}px ${s['editor.fontFamily']}`;
+    try {
+      await Promise.all([font, `italic ${font}`, `bold ${font}`].map((f) => document.fonts.load(f)));
+      await document.fonts.ready;
+    } catch { /* bad font string: Monaco keeps its fallback measurement */ }
+    monaco.editor.remeasureFonts();
+  }
+
   applySettings(s) {
     for (const t of this.tabs) if (t.model) t.model.updateOptions({ tabSize: s['editor.tabSize'], insertSpaces: s['editor.insertSpaces'] });
     this.editor.updateOptions({
@@ -135,11 +199,15 @@ export class Editors {
       fontFamily: s['editor.fontFamily'],
       fontSize: s['editor.fontSize'],
       lineHeight: Math.round(s['editor.fontSize'] * s['editor.lineHeight']),
+      suggestFontSize: s['editor.fontSize'],
+      suggestLineHeight: Math.round(s['editor.fontSize'] * s['editor.lineHeight']),
       minimap: { enabled: !!s['editor.minimap'] },
       wordWrap: s['editor.wordWrap'] ? 'on' : 'off',
       inlayHints: { enabled: s['editor.inlayHints'] ? 'on' : 'off' },
       codeLens: s['editor.codeLens'] !== false,
+      bracketPairColorization: { enabled: s['workbench.theme'] === 'rainbow' },
     });
+    this.remeasureFonts(s);
   }
 
   // ------------------------------------------------------------------ open
@@ -332,14 +400,17 @@ export class Editors {
       '-',
       { label: '경로 복사', icon: 'copy', action: () => navigator.clipboard.writeText(t.path) },
       { label: '상대 경로 복사', action: () => navigator.clipboard.writeText(relPath(this.app.project, t.path)) },
-      { label: 'Explorer에서 선택', icon: 'target', action: () => this.app.explorer.reveal(t.path) },
+      { label: '탐색기에서 선택', icon: 'target', action: () => this.app.explorer.reveal(t.path) },
       { label: '파일 탐색기에서 열기', icon: 'folder-opened', action: () => window.papyrus.app.reveal(t.path) },
     ]);
   }
 
   async closeTab(tab, { force = false, noHistory = false } = {}) {
     if (!tab) return true;
-    if (tab.dirty && !force) {
+    if (tab.dirty && !force && (this.app.settings['files.autoSave'] || 'off') !== 'off') {
+      // auto save on: closing saves like switching tabs does, no question (Rider)
+      if (!(await this.save(tab))) return false;
+    } else if (tab.dirty && !force) {
       const r = await window.papyrus.app.confirm({ message: `${basename(tab.path)}에 저장하지 않은 변경 사항이 있어요.`, buttons: ['저장', '저장 안 함', '취소'], type: 'warning' });
       if (r === 2) return false;
       if (r === 0 && !(await this.save(tab))) return false;
@@ -492,6 +563,7 @@ export class Editors {
     }
     if (we.changes) for (const [uri, edits] of Object.entries(we.changes)) add(uri, edits);
 
+    let wroteClosed = false;
     for (const [uri, edits] of byUri) {
       const model = monaco.editor.getModel(monaco.Uri.parse(uri));
       if (model && !this.shadow.has(model.uri.toString())) {
@@ -505,7 +577,10 @@ export class Editors {
       const text = applyTextEdits(res.text, edits);
       await ofs.writeFile(p, text, res.encoding === 'cp949' ? 'utf8bom' : res.encoding);
       if (model) model.setValue(text);
+      this.app.lsp.syncDiskWrite(uri, text);
+      wroteClosed = true;
     }
+    if (wroteClosed) this.app.lsp.refreshAfterExternalEdit();
   }
 
   // ------------------------------------------------------------------ history

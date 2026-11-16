@@ -10,12 +10,13 @@ const defaults = {
   'workbench.theme': 'dark',
   'keyboard.doubleShift': true,
   keybindings: {},
-  'files.autoSave': 'off',
+  'files.autoSave': 'onFocusChange', // save when switching tabs or leaving the window, like Rider
   'files.autoSaveDelay': 1000,
   'editor.fontLigatures': false,
   'editor.renderWhitespace': 'none',
   'editor.stickyScroll': true,
   'editor.formatOnType': true,
+  'editor.learnedCompletions': true,
   'editor.codeLens': true,
   'editor.fontSize': 13,
   'editor.fontFamily': "'JetBrains Mono', Consolas, monospace",
@@ -33,6 +34,7 @@ const defaults = {
   'lsp.args': [],
   'lsp.autoRestore': true,
   'explorer.hideProjectFiles': true,
+  'explorer.renameClassWithFile': false, // remembered "rename the class too" checkbox of file rename
   'files.exclude': ['Library', 'Temp', 'Logs', 'obj', 'UserSettings', 'Build', 'Builds', '.git', '.vs', '.idea', '.vscode', 'MemoryCaptures'],
   reopenLastProject: true,
 };

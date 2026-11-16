@@ -5,14 +5,14 @@ import { eventToKey, displayKey, normalizeKey } from './keybindings.js';
 export const SCHEMA = [
   {
     id: 'appearance', title: '모양', icon: 'symbol-color', items: [
-      { key: 'workbench.theme', label: '색 테마', type: 'select', options: [['dark', '어두운 테마'], ['light', '밝은 테마'], ['system', '시스템 설정 따르기']] },
+      { key: 'workbench.theme', label: '색 테마', type: 'select', options: [['dark', '어두운 테마'], ['light', '밝은 테마'], ['rainbow', '무지개 테마'], ['system', '시스템 설정 따르기']] },
       { key: 'editor.fontFamily', label: '에디터 글꼴', type: 'text', desc: "쉼표로 여러 개 지정할 수 있어요. 기본: 'JetBrains Mono', Consolas, monospace" },
       { key: 'editor.fontSize', label: '글자 크기', type: 'number', min: 8, max: 40 },
       { key: 'editor.lineHeight', label: '줄 간격 (글자 크기의 배수)', type: 'number', min: 1, max: 2.5, step: 0.05 },
       { key: 'editor.fontLigatures', label: '합자 사용', type: 'bool', desc: '=>, !=, == 같은 기호를 하나로 이어서 보여 줘요.' },
       { key: 'editor.minimap', label: '미니맵', type: 'bool' },
       { key: 'editor.inlayHints', label: '파라미터 이름 힌트', type: 'bool', desc: 'Jump(force: 7.5f) 처럼 인자 앞에 파라미터 이름을 표시해요.' },
-      { key: 'editor.codeLens', label: '참조 개수 표시', type: 'bool', desc: '클래스·메서드 위에 "N references"를 표시해요.' },
+      { key: 'editor.codeLens', label: '참조 개수 표시', type: 'bool', desc: '클래스·메서드 위에 "참조 N개", "상속 N개" 같은 표시를 보여줘요.' },
       { key: 'editor.stickyScroll', label: '현재 클래스/메서드 머리글 고정', type: 'bool' },
       { key: 'editor.renderWhitespace', label: '공백 문자 표시', type: 'select', options: [['none', '안 함'], ['boundary', '단어 사이 공백 제외'], ['all', '모두']] },
     ],
@@ -24,14 +24,15 @@ export const SCHEMA = [
       { key: 'editor.wordWrap', label: '자동 줄 바꿈', type: 'bool' },
       { key: 'editor.formatOnSave', label: '저장할 때 서식 적용 (C#)', type: 'bool' },
       { key: 'editor.formatOnType', label: '입력하면서 서식 적용', type: 'bool', desc: '; 나 } 를 입력하면 해당 줄을 정리해요.' },
+        { key: 'editor.learnedCompletions', label: '학습형 자동완성', type: 'bool', desc: '줄의 첫 단어를 입력할 때 자주 쓰는 줄을 제안하고, Unity 스니펫(sf, awake, dlog…)도 보여 줘요.' },
     ],
   },
   {
     id: 'files', title: '파일', icon: 'files', items: [
       { key: 'files.autoSave', label: '자동 저장', type: 'select', options: [['off', '끄기'], ['afterDelay', '입력을 멈추면'], ['onFocusChange', '탭이나 창을 바꿀 때']] },
       { key: 'files.autoSaveDelay', label: '자동 저장 지연 (ms)', type: 'number', min: 200, max: 10000, step: 100 },
-      { key: 'explorer.hideProjectFiles', label: 'Explorer에서 .sln / .csproj 숨기기', type: 'bool' },
-      { key: 'files.exclude', label: 'Explorer·검색에서 제외할 폴더', type: 'list', desc: '한 줄에 하나씩' },
+      { key: 'explorer.hideProjectFiles', label: '탐색기에서 .sln / .csproj 숨기기', type: 'bool' },
+      { key: 'files.exclude', label: '탐색기·검색에서 제외할 폴더', type: 'list', desc: '한 줄에 하나씩' },
       { key: 'reopenLastProject', label: '시작할 때 마지막 프로젝트 열기', type: 'bool' },
     ],
   },

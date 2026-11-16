@@ -4,6 +4,7 @@
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
+const { StringDecoder } = require('string_decoder');
 
 class UnityBridge {
   constructor({ root, onMessage, onStatus }) {
@@ -79,6 +80,9 @@ class UnityBridge {
     const sock = net.createConnection({ host: '127.0.0.1', port: info.port });
     sock.setNoDelay(true);
     let opened = false;
+    // big replies (hierarchy, inspector) arrive in several chunks; a Korean character can be split
+    // across two of them, so decode with a StringDecoder instead of chunk.toString()
+    const decoder = new StringDecoder('utf8');
     sock.on('connect', () => {
       opened = true;
       this.connecting = false;
@@ -90,7 +94,7 @@ class UnityBridge {
       this.send({ type: 'hello', ide: 'PAPyrus', pid: process.pid });
     });
     sock.on('data', (d) => {
-      this.buf += d.toString('utf8');
+      this.buf += decoder.write(d);
       let i;
       while ((i = this.buf.indexOf('\n')) >= 0) {
         const line = this.buf.slice(0, i).trim();
