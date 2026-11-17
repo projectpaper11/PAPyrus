@@ -83,6 +83,9 @@ function createWindow(project, goto) {
   sessions.set(win.id, s);
 
   win.once('ready-to-show', () => win.show());
+  // when this window last lost the focus (see focusIde)
+  win.on('blur', () => { s.blurAt = Date.now(); });
+  win.on('focus', () => { s.blurAt = 0; });
   // the Unity inspector window laid over the right dock follows the IDE window
   for (const ev of ['move', 'resize', 'minimize', 'restore', 'maximize', 'unmaximize', 'show', 'hide', 'enter-full-screen', 'leave-full-screen']) {
     win.on(ev, () => placeUnityMirror(s));
@@ -138,6 +141,22 @@ function stopSession(s) {
   try { s.unity && s.unity.stop(); } catch { /* ignore */ }
   s.lsp = null;
   s.unity = null;
+}
+
+/**
+ * Was this window in front just before Unity's message? `fg` is the window Unity saw in front before
+ * it opened its own (newer packages); without it, the focus must have been lost a moment ago.
+ */
+function wasJustFocused(s, fg) {
+  if (s.win.isDestroyed() || s.win.isMinimized()) return false;
+  if (typeof fg === 'number' && fg) return fg === nativeHandle(s.win);
+  if (s.win.isFocused()) return true;
+  return !!s.blurAt && Date.now() - s.blurAt < 1500;
+}
+
+function nativeHandle(win) {
+  const h = win.getNativeWindowHandle();
+  return h.length >= 8 ? Number(h.readBigUInt64LE(0)) : h.readUInt32LE(0);
 }
 
 function focusWindow(win) {
@@ -391,8 +410,10 @@ ipcMain.handle('unity:start', (e) => {
     root: s.project,
     onMessage: (msg) => {
       if (msg.type === 'focusIde') {
-        // Unity just showed the inspector mirror window and stole the focus
-        focusWindow(s.win);
+        // Unity just showed the inspector mirror window and stole the focus. Take it back only when it
+        // was taken from this window: Unity reopens the mirror after a script reload or a selection
+        // made in Unity, and pulling the IDE up then dragged it over whatever the user had switched to.
+        if (wasJustFocused(s, msg.fg)) focusWindow(s.win);
         return;
       }
       if (msg.type === 'open' && msg.file) {
@@ -434,8 +455,7 @@ function placeUnityMirror(s) {
     width: Math.round(r.width * zoom),
     height: Math.round(r.height * zoom),
   });
-  const h = win.getNativeWindowHandle();
-  const hwnd = h.length >= 8 ? Number(h.readBigUInt64LE(0)) : h.readUInt32LE(0);
+  const hwnd = nativeHandle(win);
   s.unity.send({
     type: 'inspector.mirrorPlace',
     id: 0,
