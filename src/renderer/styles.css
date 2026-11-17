@@ -196,6 +196,9 @@ body.mac #titlebar { padding-left: 80px; }
 .drag-ghost { position: fixed; left: 0; top: 0; z-index: 10000; pointer-events: none; display: flex; align-items: center; gap: 6px; padding: 3px 9px; font-size: 12px; background: var(--bg-popup); border: 1px solid var(--border-popup); border-radius: 6px; box-shadow: 0 4px 14px var(--shadow); white-space: nowrap; }
 body.pdrag, body.pdrag * { cursor: default !important; user-select: none !important; }
 body.pdrag.pdrag-no, body.pdrag.pdrag-no * { cursor: no-drop !important; }
+/* Ctrl+C with nothing selected: the copied line flashes in the selection color (app.js attachLineCopyFlash) */
+.monaco-editor .line-copy-flash { background: var(--vscode-editor-selectionBackground, rgba(74, 131, 242, 0.35)); animation: line-copy-flash 650ms ease-out forwards; }
+@keyframes line-copy-flash { 0%, 45% { opacity: 1; } 100% { opacity: 0; } }
 /* drag & drop move: the folder it would land in */
 .tree-row.drop-target { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); border-radius: 4px; }
 .tree.drop-root { box-shadow: inset 0 0 0 1px var(--accent); }
@@ -378,6 +381,17 @@ body.pdrag.pdrag-no, body.pdrag.pdrag-no * { cursor: no-drop !important; }
 .sb-item.ok .codicon { color: var(--green); }
 
 /* ---------------------------------------------------------------- popups */
+/* background image (background-art.js): over the code, under menus and dialogs */
+#body { position: relative; }
+#bg-art { position: absolute; inset: 0; pointer-events: none; z-index: 60; }
+.range-wrap { display: flex; align-items: center; gap: 10px; }
+.settings-range { width: 200px; accent-color: var(--accent); }
+.range-val { min-width: 40px; color: var(--fg-dim); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.bg-pick { display: flex; gap: 12px; align-items: center; padding: 4px; border: 1px dashed transparent; border-radius: 8px; }
+.bg-pick.drop { border-color: var(--accent); background: var(--accent-soft); }
+.bg-thumb { width: 160px; height: 90px; border-radius: 6px; border: 1px solid var(--border-soft); background: var(--bg-input) center / cover no-repeat; flex: none; display: grid; place-items: center; }
+.bg-thumb.empty .codicon { font-size: 26px; color: var(--fg-faint); }
+.bg-pick-btns { display: flex; flex-direction: column; gap: 6px; }
 #overlay-root { position: fixed; inset: 0; pointer-events: none; z-index: 100; }
 #overlay-root > * { pointer-events: auto; }
 .popup { position: fixed; background: var(--bg-popup); border: 1px solid var(--border-popup); border-radius: 10px; box-shadow: 0 12px 40px var(--shadow); overflow: hidden; display: flex; flex-direction: column; }

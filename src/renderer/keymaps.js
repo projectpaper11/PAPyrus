@@ -1,4 +1,5 @@
-// Keymap presets. The commands' own keys (app.js setupCommands) are the Visual Studio Code keymap;
+// Keymap presets. The commands' own keys (app.js setupCommands) are the Visual Studio Code keymap
+// (with a few Rider keys: Ctrl+D duplicates, Alt+J = next occurrence);
 // another preset lists only the commands whose keys differ ([] = no key). The user's own changes
 // (settings.keybindings) still go on top of whichever preset is chosen.
 export const KEYMAPS = {
@@ -31,7 +32,8 @@ export const KEYMAPS = {
       'papyrus.formatDocument': ['Ctrl+K Ctrl+D', 'Ctrl+E Ctrl+D'],
       'editor.action.commentLine': ['Ctrl+K Ctrl+/'],
       'editor.action.blockComment': ['Ctrl+Shift+/'],
-      'editor.action.copyLinesDownAction': ['Ctrl+D', 'Ctrl+E Ctrl+V'],
+      'editor.action.duplicateSelection': ['Ctrl+D'],
+      'editor.action.copyLinesDownAction': ['Ctrl+E Ctrl+V'],
       'editor.action.copyLinesUpAction': [],
       'editor.action.deleteLines': ['Ctrl+Shift+L'],
       'editor.action.insertLineAfter': ['Ctrl+Shift+Enter'],

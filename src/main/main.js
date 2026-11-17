@@ -234,6 +234,31 @@ ipcMain.handle('app:openFolderDialog', async (e) => {
   return r.canceled ? null : r.filePaths[0];
 });
 
+// Background image (Rider's "Set Background Image"): the picked picture is copied into
+// userData/backgrounds, so moving or deleting the original doesn't take it away.
+const BG_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'];
+ipcMain.handle('app:pickBackgroundImage', async (e, given) => {
+  const s = sessionFor(e.sender);
+  let src = given;
+  if (!src) {
+    const r = await dialog.showOpenDialog(s.win, { title: '배경 이미지 고르기', properties: ['openFile'], filters: [{ name: '이미지', extensions: BG_EXT }] });
+    if (r.canceled || !r.filePaths[0]) return null;
+    src = r.filePaths[0];
+  }
+  if (!BG_EXT.includes(path.extname(src).slice(1).toLowerCase())) throw new Error('이미지 파일(png, jpg, gif, webp, bmp)만 쓸 수 있어요');
+  const dir = path.join(app.getPath('userData'), 'backgrounds');
+  fs.mkdirSync(dir, { recursive: true });
+  const dest = path.join(dir, Date.now() + '-' + path.basename(src).replace(/[^\w.\-]+/g, '_'));
+  fs.copyFileSync(src, dest);
+  // earlier copies aren't needed any more (the current one is the setting's)
+  const keep = new Set([path.resolve(dest).toLowerCase(), path.resolve(String(settings.get('appearance.backgroundImage') || '')).toLowerCase()]);
+  for (const n of fs.readdirSync(dir)) {
+    const p = path.join(dir, n);
+    if (!keep.has(path.resolve(p).toLowerCase())) { try { fs.unlinkSync(p); } catch { /* in use */ } }
+  }
+  return dest;
+});
+
 ipcMain.handle('app:setProject', (e, project) => {
   const s = sessionFor(e.sender);
   stopSession(s);

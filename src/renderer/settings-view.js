@@ -2,6 +2,7 @@
 import { el, icon, toast, debounce } from './ui.js';
 import { eventToKey, displayKey, normalizeKey } from './keybindings.js';
 import { KEYMAPS, keymapLabel } from './keymaps.js';
+import { FILL_OPTIONS, ANCHOR_OPTIONS, fileUrl, setBackgroundOpacity } from './background-art.js';
 
 export const SCHEMA = [
   {
@@ -16,6 +17,16 @@ export const SCHEMA = [
       { key: 'editor.codeLens', label: '참조 개수 표시', type: 'bool', desc: '클래스·메서드 위에 "참조 N개", "상속 N개" 같은 표시를 보여줘요.' },
       { key: 'editor.stickyScroll', label: '현재 클래스/메서드 머리글 고정', type: 'bool' },
       { key: 'editor.renderWhitespace', label: '공백 문자 표시', type: 'select', options: [['none', '안 함'], ['boundary', '단어 사이 공백 제외'], ['all', '모두']] },
+    ],
+  },
+  {
+    id: 'background', title: '배경 이미지', icon: 'file-media', items: [
+      { key: 'appearance.backgroundImage', label: '배경 이미지', type: 'image', desc: 'Rider처럼 코드 뒤에 좋아하는 그림을 깔아요. 이미지 파일을 여기로 끌어다 놓아도 돼요. 고른 그림은 PAPyrus 설정 폴더에 복사돼서 원본을 옮겨도 그대로예요.' },
+      { key: 'appearance.backgroundEnabled', label: '배경 이미지 표시', type: 'bool', desc: '명령 팔레트의 "배경 이미지 켜기/끄기"로도 바꿀 수 있어요.' },
+      { key: 'appearance.backgroundOpacity', label: '진하기 (불투명도)', type: 'range', min: 0, max: 100, step: 1, unit: '%', live: setBackgroundOpacity, desc: '코드가 잘 보이려면 10~25%를 추천해요.' },
+      { key: 'appearance.backgroundFill', label: '채우기 방식', type: 'select', options: FILL_OPTIONS },
+      { key: 'appearance.backgroundAnchor', label: '위치', type: 'select', options: ANCHOR_OPTIONS, desc: '그림의 어느 쪽을 기준으로 맞출지예요 (꽉 채우기에서 잘리는 쪽이 바뀌어요).' },
+      { key: 'appearance.backgroundTarget', label: '표시할 곳', type: 'select', options: [['editor', '에디터만'], ['all', '에디터와 툴 창 전체']] },
     ],
   },
   {
@@ -113,6 +124,41 @@ export class SettingsView {
     this.body.scrollTop = 0;
   }
 
+  /** Picture setting: preview, "찾기…", "지우기"; an image file dropped on it is used too. */
+  imageControl(item, val, set) {
+    const O = window.papyrus.app;
+    const use = async (file) => {
+      try {
+        const p = await O.pickBackgroundImage(file || null);
+        if (!p) return;
+        await set(p);
+        if (this.app.settings['appearance.backgroundEnabled'] === false) await this.app.setSetting('appearance.backgroundEnabled', true);
+        this.render();
+      } catch (err) {
+        toast({ kind: 'warn', title: '배경 이미지', message: String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), timeout: 4000 });
+      }
+    };
+    const thumb = el('div.bg-thumb' + (val ? '' : '.empty'), { title: val || '' }, val ? null : icon('file-media'));
+    if (val) thumb.style.backgroundImage = `url("${fileUrl(val)}")`;
+    const wrap = el('div.bg-pick', {
+      ondragover: (e) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); e.stopPropagation(); wrap.classList.add('drop'); } },
+      ondragleave: () => wrap.classList.remove('drop'),
+      ondrop: (e) => {
+        wrap.classList.remove('drop');
+        const f = e.dataTransfer.files[0];
+        if (!f) return;
+        e.preventDefault();
+        e.stopPropagation();
+        use(O.pathForFile(f));
+      },
+    },
+    thumb,
+    el('div.bg-pick-btns', null,
+      el('button.btn', { onclick: () => use() }, icon('folder-opened'), val ? '바꾸기…' : '찾기…'),
+      val ? el('button.btn', { onclick: async () => { await set(''); this.render(); } }, icon('trash'), '지우기') : null));
+    return wrap;
+  }
+
   renderGroup(g) {
     return el('div.settings-group', null, el('h2', null, g.title), ...g.items.map((i) => this.renderItem(i)));
   }
@@ -140,6 +186,16 @@ export class SettingsView {
           set(n);
         },
       });
+    } else if (item.type === 'range') {
+      const out = el('span.range-val', null, `${val}${item.unit || ''}`);
+      const input = el('input.settings-range', {
+        type: 'range', min: item.min, max: item.max, step: item.step || 1, value: val,
+        oninput: (e) => { out.textContent = `${e.target.value}${item.unit || ''}`; if (item.live) item.live(e.target.value); },
+        onchange: (e) => set(Number(e.target.value)),
+      });
+      control = el('div.range-wrap', null, input, out);
+    } else if (item.type === 'image') {
+      control = this.imageControl(item, val, set);
     } else if (item.type === 'list') {
       control = el('textarea.settings-input.list', {
         rows: 4,

@@ -8,6 +8,13 @@ const defaults = {
   'update.repo': '',
   'setup.dontShow': false,
   'workbench.theme': 'dark',
+  // background image behind the code (Rider's Set Background Image)
+  'appearance.backgroundImage': '', // a copy in userData/backgrounds
+  'appearance.backgroundEnabled': true,
+  'appearance.backgroundOpacity': 15, // %
+  'appearance.backgroundFill': 'cover', // cover | contain | center | tile | stretch
+  'appearance.backgroundAnchor': 'center', // CSS background-position
+  'appearance.backgroundTarget': 'editor', // editor | all (editor + tool windows)
   'keyboard.doubleShift': true,
   'keyboard.keymap': 'vscode', // 'vscode' | 'vs' (Visual Studio): default keys, see src/renderer/keymaps.js
   keybindings: {},

@@ -29,6 +29,7 @@ import { UsingCleanup } from './using-cleanup.js';
 import { UnityFeatures } from './unity-features.js';
 import { LocalHistory } from './local-history.js';
 import { NamespaceCheck } from './namespace-check.js';
+import { applyBackground } from './background-art.js';
 import { showLocationPopup, popupPoint } from './location-popup.js';
 import { el, icon, basename, dirname, relPath, joinPath, contextMenu, toast, debounce, samePath, extname } from './ui.js';
 
@@ -86,6 +87,7 @@ class App {
       this.codeMemory.attach(ed);
       this.attachRefactorMenu(ed);
       this.attachCtrlClickUsages(ed);
+      this.attachLineCopyFlash(ed);
     });
     this.lsp.ensureModelHook = (uris) => this.editors.ensureModels(uris);
     this.usingCleanup = new UsingCleanup(this);
@@ -855,6 +857,30 @@ class App {
 
   // Ctrl+click on a declaration shows its usages at the click point (Monaco's own fallback opens
   // the inline peek below the line; that's switched off in the editor options).
+  // Ctrl+C / Ctrl+X with nothing selected takes the whole line (Monaco's emptySelectionClipboard,
+  // like Rider). The line lights up in the selection color for a moment, as if it had been
+  // selected, so it's clear what went to the clipboard (a real selection would get replaced by
+  // the next keystroke).
+  attachLineCopyFlash(editor) {
+    let deco = null;
+    let timer = 0;
+    editor.onKeyDown((e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      if (e.keyCode !== monaco.KeyCode.KeyC && e.keyCode !== monaco.KeyCode.Insert) return;
+      const model = editor.getModel();
+      const sels = editor.getSelections();
+      if (!model || !sels || !sels.every((s) => s.isEmpty())) return;
+      const lines = [...new Set(sels.map((s) => s.positionLineNumber))];
+      if (deco) deco.clear();
+      clearTimeout(timer);
+      deco = editor.createDecorationsCollection(lines.map((ln) => ({
+        range: new monaco.Range(ln, 1, ln, model.getLineMaxColumn(ln)),
+        options: { isWholeLine: true, className: 'line-copy-flash' },
+      })));
+      timer = setTimeout(() => { if (deco) deco.clear(); deco = null; }, 650);
+    });
+  }
+
   attachCtrlClickUsages(editor) {
     editor.onMouseUp(async (e) => {
       const ev = e.event;
@@ -1271,7 +1297,9 @@ class App {
     M('editor.action.insertLineBefore', '위에 줄 삽입', 'Ctrl+Shift+Enter', cat);
     M('editor.action.indentLines', '들여쓰기', 'Ctrl+]', cat);
     M('editor.action.outdentLines', '내어쓰기', 'Ctrl+[', cat);
-    M('editor.action.addSelectionToNextFindMatch', '다음 일치 항목 선택 추가', 'Ctrl+D', cat);
+    // Rider: Ctrl+D duplicates, Alt+J adds the next occurrence
+    M('editor.action.duplicateSelection', '줄 또는 선택 영역 복제 (바로 아래에)', 'Ctrl+D', cat);
+    M('editor.action.addSelectionToNextFindMatch', '다음 일치 항목 선택 추가', 'Alt+J', cat);
     M('editor.action.selectHighlights', '모든 일치 항목 선택', 'Ctrl+Shift+L', cat);
     M('editor.action.insertCursorAbove', '위에 커서 추가', 'Ctrl+Alt+Up', cat);
     M('editor.action.insertCursorBelow', '아래에 커서 추가', 'Ctrl+Alt+Down', cat);
@@ -1330,6 +1358,21 @@ class App {
     G('papyrus.zoomIn', '글자 크게', ['Ctrl+=', 'Ctrl+Shift+='], () => this.zoom(1), { icon: 'zoom-in', ...cat });
     G('papyrus.zoomOut', '글자 작게', 'Ctrl+-', () => this.zoom(-1), { icon: 'zoom-out', ...cat });
     G('papyrus.zoomReset', '글자 크기 초기화', 'Ctrl+0', () => this.zoom(0), { icon: 'screen-normal', ...cat });
+    G('papyrus.setBackgroundImage', '배경 이미지 고르기…', [], async () => {
+      try {
+        const p = await O.app.pickBackgroundImage(null);
+        if (!p) return;
+        await this.setSetting('appearance.backgroundImage', p);
+        if (this.settings['appearance.backgroundEnabled'] === false) await this.setSetting('appearance.backgroundEnabled', true);
+        toast({ title: '배경 이미지', message: '진하기·채우기 방식은 설정 → 배경 이미지에서 바꿀 수 있어요.', actions: [{ label: '설정 열기', action: () => this.openSettings && this.openSettings('background') }], timeout: 5000 });
+      } catch (err) {
+        toast({ kind: 'warn', title: '배경 이미지', message: String(err.message || err), timeout: 4000 });
+      }
+    }, { icon: 'file-media', ...cat });
+    G('papyrus.toggleBackgroundImage', '배경 이미지 켜기/끄기', [], () => {
+      if (!this.settings['appearance.backgroundImage']) { this.keys.run('papyrus.setBackgroundImage'); return; }
+      this.setSetting('appearance.backgroundEnabled', this.settings['appearance.backgroundEnabled'] === false);
+    }, { icon: 'eye', ...cat });
     G('papyrus.toggleTheme', '밝은/어두운 테마 전환', 'Ctrl+K Ctrl+T', () => this.setSetting('workbench.theme', this.effectiveTheme() === 'dark' ? 'light' : 'dark'), { icon: 'color-mode', ...cat });
     G('papyrus.clearCodeMemory', '학습한 자동완성 기록 지우기', [], () => {
       this.codeMemory.clear();
@@ -1424,6 +1467,7 @@ class App {
   }
 
   applyTheme() {
+    applyBackground(this.settings);
     const t = this.effectiveTheme();
     document.body.classList.toggle('light', t === 'light');
     document.body.classList.toggle('rainbow', this.isRainbow());

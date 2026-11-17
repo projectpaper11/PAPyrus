@@ -91,7 +91,8 @@ Release 페이지에 적은 설명은 업데이트 알림에 같이 표시돼요
 | 이름 바꾸기 / 빠른 수정 | F2 / Ctrl+. |
 | 문서 서식 / 선택 영역 서식 | Shift+Alt+F / Ctrl+K Ctrl+F |
 | 줄 복사 / 줄 이동 / 줄 삭제 | Shift+Alt+↓ / Alt+↓ / Ctrl+Shift+K |
-| 다음 일치 항목 선택 / 모두 선택 | Ctrl+D / Ctrl+Shift+L |
+| 줄(또는 선택 영역) 복제 | Ctrl+D |
+| 다음 일치 항목 선택 / 모두 선택 | Alt+J / Ctrl+Shift+L |
 | 선택 확장 / 축소 | Shift+Alt+→ / Shift+Alt+← |
 | 다음 / 이전 문제 | F8 / Shift+F8 |
 | 뒤로 / 앞으로 | Alt+← / Alt+→ |

@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('papyrus', {
   app: {
     init: () => ipcRenderer.invoke('app:init'),
     openFolderDialog: () => ipcRenderer.invoke('app:openFolderDialog'),
+    pickBackgroundImage: (file) => ipcRenderer.invoke('app:pickBackgroundImage', file),
     setProject: (p) => ipcRenderer.invoke('app:setProject', p),
     setTitle: (t) => ipcRenderer.invoke('app:setTitle', t),
     setSettings: (patch) => ipcRenderer.invoke('app:setSettings', patch),
