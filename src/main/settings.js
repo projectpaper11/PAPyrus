@@ -13,7 +13,8 @@ const defaults = {
   'appearance.backgroundEnabled': true,
   'appearance.backgroundOpacity': 15, // %
   'appearance.backgroundFill': 'cover', // cover | contain | center | tile | stretch
-  'appearance.backgroundAnchor': 'center', // CSS background-position
+  'appearance.backgroundAnchor': '50% 50%', // the picture's point that sits on the same point of the area
+  'appearance.backgroundScale': 100, // % zoom on top of the fill mode
   'appearance.backgroundTarget': 'editor', // editor | all (editor + tool windows)
   'keyboard.doubleShift': true,
   'keyboard.keymap': 'vscode', // 'vscode' | 'vs' (Visual Studio): default keys, see src/renderer/keymaps.js

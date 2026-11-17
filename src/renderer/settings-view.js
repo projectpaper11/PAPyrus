@@ -2,7 +2,7 @@
 import { el, icon, toast, debounce } from './ui.js';
 import { eventToKey, displayKey, normalizeKey } from './keybindings.js';
 import { KEYMAPS, keymapLabel } from './keymaps.js';
-import { FILL_OPTIONS, ANCHOR_OPTIONS, fileUrl, setBackgroundOpacity } from './background-art.js';
+import { FILL_OPTIONS, fileUrl, setBackgroundOpacity, paint, applyBackground, backgroundArea, parseAnchor, anchorText } from './background-art.js';
 
 export const SCHEMA = [
   {
@@ -25,7 +25,7 @@ export const SCHEMA = [
       { key: 'appearance.backgroundEnabled', label: '배경 이미지 표시', type: 'bool', desc: '명령 팔레트의 "배경 이미지 켜기/끄기"로도 바꿀 수 있어요.' },
       { key: 'appearance.backgroundOpacity', label: '진하기 (불투명도)', type: 'range', min: 0, max: 100, step: 1, unit: '%', live: setBackgroundOpacity, desc: '코드가 잘 보이려면 10~25%를 추천해요.' },
       { key: 'appearance.backgroundFill', label: '채우기 방식', type: 'select', options: FILL_OPTIONS },
-      { key: 'appearance.backgroundAnchor', label: '위치', type: 'select', options: ANCHOR_OPTIONS, desc: '그림의 어느 쪽을 기준으로 맞출지예요 (꽉 채우기에서 잘리는 쪽이 바뀌어요).' },
+      { key: 'appearance.backgroundAnchor', label: '위치·크기 조정', type: 'bgposition', desc: '미리보기를 끌어서 원하는 부분이 보이게 옮기고, 마우스 휠이나 슬라이더로 확대·축소해요. 바꾸는 동안 실제 화면에도 바로 보여요.' },
       { key: 'appearance.backgroundTarget', label: '표시할 곳', type: 'select', options: [['editor', '에디터만'], ['all', '에디터와 툴 창 전체']] },
     ],
   },
@@ -124,6 +124,86 @@ export class SettingsView {
     this.body.scrollTop = 0;
   }
 
+  /**
+   * The background as it will look, in the shape of the area it covers: drag to move the picture,
+   * wheel (or the slider) to zoom. The real background follows live; saved when you let go.
+   */
+  backgroundPositioner() {
+    const s = this.app.settings;
+    if (!s['appearance.backgroundImage']) return el('span.si-desc', null, '먼저 배경 이미지를 고르세요.');
+    const area = backgroundArea(s);
+    const W = 360;
+    const H = Math.round(Math.max(120, Math.min(300, W * (area.h / Math.max(1, area.w)))));
+    const box = { w: W, h: H };
+    let anchor = parseAnchor(s['appearance.backgroundAnchor']);
+    let scale = Number(s['appearance.backgroundScale']) || 100;
+    const draft = () => ({ ...this.app.settings, 'appearance.backgroundAnchor': anchorText(anchor), 'appearance.backgroundScale': Math.round(scale) });
+    const view = el('div.bg-pos', { style: { width: W + 'px', height: H + 'px' }, title: '끌어서 옮기기 · 휠로 확대/축소 · 더블클릭: 가운데' });
+    const info = el('span.bg-pos-info');
+    const zoom = el('input.settings-range', { type: 'range', min: 30, max: 500, step: 1, value: scale });
+    const zoomVal = el('span.range-val');
+    let laid = null;
+    const show = async (live) => {
+      info.textContent = `위치 ${anchorText(anchor)} · 크기 ${Math.round(scale)}%`;
+      zoomVal.textContent = Math.round(scale) + '%';
+      zoom.value = scale;
+      const d = draft();
+      laid = await paint(view, d, box);
+      if (live) applyBackground(d);
+    };
+    let saveTimer = 0;
+    const save = () => {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(async () => {
+        await this.app.setSetting('appearance.backgroundAnchor', anchorText(anchor));
+        await this.app.setSetting('appearance.backgroundScale', Math.round(scale));
+      }, 250);
+    };
+    // drag = pan: the picture follows the mouse
+    view.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || !laid) return;
+      e.preventDefault();
+      view.setPointerCapture(e.pointerId);
+      view.classList.add('grabbing');
+      const start = { x: e.clientX, y: e.clientY, a: { ...anchor } };
+      const move = (ev) => {
+        const dx = ev.clientX - start.x;
+        const dy = ev.clientY - start.y;
+        const fx = box.w - laid.size.w;
+        const fy = box.h - laid.size.h;
+        anchor = {
+          x: Math.abs(fx) > 0.5 ? Math.max(0, Math.min(100, start.a.x + (dx / fx) * 100)) : start.a.x,
+          y: Math.abs(fy) > 0.5 ? Math.max(0, Math.min(100, start.a.y + (dy / fy) * 100)) : start.a.y,
+        };
+        show(true);
+      };
+      const up = () => {
+        view.removeEventListener('pointermove', move);
+        view.removeEventListener('pointerup', up);
+        view.removeEventListener('pointercancel', up);
+        view.classList.remove('grabbing');
+        save();
+      };
+      view.addEventListener('pointermove', move);
+      view.addEventListener('pointerup', up);
+      view.addEventListener('pointercancel', up);
+    });
+    view.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      scale = Math.max(30, Math.min(500, scale * Math.pow(1.1, -e.deltaY / 100)));
+      show(true);
+      save();
+    }, { passive: false });
+    view.addEventListener('dblclick', () => { anchor = { x: 50, y: 50 }; show(true); save(); });
+    zoom.addEventListener('input', () => { scale = Number(zoom.value); show(true); });
+    zoom.addEventListener('change', save);
+    const reset = el('button.btn.small', { onclick: () => { anchor = { x: 50, y: 50 }; scale = 100; show(true); save(); } }, icon('discard'), '원래대로');
+    show(false);
+    return el('div.bg-pos-wrap', null, view,
+      el('div.bg-pos-tools', null, el('span.bg-pos-label', null, '크기'), zoom, zoomVal, reset),
+      info);
+  }
+
   /** Picture setting: preview, "찾기…", "지우기"; an image file dropped on it is used too. */
   imageControl(item, val, set) {
     const O = window.papyrus.app;
@@ -194,6 +274,8 @@ export class SettingsView {
         onchange: (e) => set(Number(e.target.value)),
       });
       control = el('div.range-wrap', null, input, out);
+    } else if (item.type === 'bgposition') {
+      control = this.backgroundPositioner();
     } else if (item.type === 'image') {
       control = this.imageControl(item, val, set);
     } else if (item.type === 'list') {
@@ -205,7 +287,7 @@ export class SettingsView {
     } else {
       control = el('input.settings-input', { type: 'text', value: val == null ? '' : val, onchange: (e) => set(e.target.value) });
     }
-    return el('div.settings-item', null,
+    return el('div.settings-item' + (item.type === 'bgposition' ? '.wide' : ''), null,
       el('div.settings-label', null, el('div.si-title', null, item.label), el('div.si-key', null, item.key), item.desc ? el('div.si-desc', null, item.desc) : null),
       el('div.settings-control', null, control));
   }
