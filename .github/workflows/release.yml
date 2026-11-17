@@ -33,7 +33,8 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           $version = $env:TAG.TrimStart('v')
-          $files = @("release/PAPyrus-Setup-$version.exe", "release/PAPyrus-Setup-$version.exe.blockmap", "release/latest.yml")
+          # fixed name (no version): https://github.com/<repo>/releases/latest/download/PAPyrus-Setup.exe is always the newest
+          $files = @("release/PAPyrus-Setup.exe", "release/PAPyrus-Setup.exe.blockmap", "release/latest.yml")
           foreach ($f in $files) { if (-not (Test-Path $f)) { throw "missing build output: $f" } }
           gh release view $env:TAG *> $null
           if ($LASTEXITCODE -eq 0) {

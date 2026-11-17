@@ -20,7 +20,7 @@ Unity용으로 만든 가벼운 C# IDE예요. 화면 구성은 Rider를 따라 �
 
 ## 설치 (Windows)
 
-1. `PAPyrus-Setup-x.y.z.exe`를 실행해요. 묻는 창 없이 설치되고 바로 켜져요. 관리자 권한은 필요 없어요.
+1. 최신 설치 파일을 받아서 실행해요: [PAPyrus-Setup.exe](https://github.com/projectpaper11/PAPyrus/releases/latest/download/PAPyrus-Setup.exe) (이 링크는 항상 최신 버전이에요). 묻는 창 없이 설치되고 바로 켜져요. 관리자 권한은 필요 없어요.
    - "Windows의 PC 보호" 창이 뜨면 **추가 정보 → 실행**을 누르면 돼요. 코드 서명을 안 한 앱이라서 뜨는 창이에요.
 2. **폴더 열기**로 Unity 프로젝트 폴더(`Assets`가 있는 폴더)를 열어요.
 3. **설정 도우미**에서 **C# 도구 자동 설정**을 누르세요.
@@ -123,7 +123,7 @@ Release 페이지에 적은 설명은 업데이트 알림에 같이 표시돼요
 ```bash
 npm install
 npm start          # 개발 실행
-npm run dist       # release/ 에 설치 파일(PAPyrus-Setup-x.y.z.exe) 생성
+npm run dist       # release/ 에 설치 파일(PAPyrus-Setup.exe) 생성
 npm run release    # 버전 올리고 태그 push → GitHub Actions가 빌드·배포
 ```
 

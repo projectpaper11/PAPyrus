@@ -38,7 +38,8 @@ module.exports = {
     createDesktopShortcut: true,
     createStartMenuShortcut: true,
     shortcutName: 'PAPyrus',
-    artifactName: 'PAPyrus-Setup-${version}.${ext}',
+    // no version in the name: releases/latest/download/PAPyrus-Setup.exe always gets the newest one
+    artifactName: 'PAPyrus-Setup.${ext}',
     installerIcon: 'build/icon.ico',
     uninstallerIcon: 'build/icon.ico',
     deleteAppDataOnUninstall: false,
