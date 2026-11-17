@@ -7,6 +7,10 @@ Also part of the installation, with their own license files next to PAPyrus.exe:
   - Electron (MIT): LICENSE.electron.txt
   - Chromium and its components: LICENSES.chromium.html
 
+The PAPyrus Unity package (resources/unity-package/com.papyrus.ide, copied into Unity projects)
+follows parts of Visual Studio Editor (com.unity.ide.visualstudio, MIT, (c) 2019 Unity Technologies
+and Microsoft Corporation): see "Third Party Notices.md" in that package.
+
 Not included in PAPyrus, obtained separately:
   - Roslyn Language Server (MIT, https://github.com/dotnet/roslyn): installed by the user as a .NET tool.
   - Microsoft.Unity.Analyzers (MIT, https://github.com/microsoft/Microsoft.Unity.Analyzers):
