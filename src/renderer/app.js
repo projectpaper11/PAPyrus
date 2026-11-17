@@ -24,6 +24,7 @@ import { SetupWizard } from './setup-wizard.js';
 import { CodeMemory } from './code-memory.js';
 import './unity-completions.js';
 import { registerOverrideCompletion } from './override-completions.js';
+import { registerUnityMessageCompletion } from './unity-messages.js';
 import { Refactorings } from './refactorings.js';
 import { UsingCleanup } from './using-cleanup.js';
 import { UnityFeatures } from './unity-features.js';
@@ -81,6 +82,7 @@ class App {
       lspCovers: (model) => model.getLanguageId() === 'csharp' && this.lspState === 'ready',
     });
     registerOverrideCompletion(this);
+    registerUnityMessageCompletion(this);
     this.refactor = new Refactorings(this);
     // every split gets the same context menu / Ctrl+click / learned completions (also splits made later)
     this.editors.forEachEditor((ed) => {

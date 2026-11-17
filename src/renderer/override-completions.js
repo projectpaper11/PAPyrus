@@ -39,7 +39,7 @@ const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const bare = (t) => (t || '').replace(/<.*$/s, '').split('.').pop();
 
 /** Every class/record/struct declaration: { name, base, start (body '{'), end }. */
-function classes(text) {
+export function classes(text) {
   const re = /\b(?:class|record|struct)\s+(\w+)\s*(?:<[^>{]*>)?\s*(?::\s*([\w.]+)(?:\s*<[^{]*?>)?)?[^{;]*\{/g;
   const out = [];
   let m;
@@ -71,7 +71,8 @@ function overridable(body, owner) {
 
 const signature = (x) => `${x.name}/${x.params ? x.params.split(',').length : 0}`;
 
-export function registerOverrideCompletion(app) {
+/** sourceOf(name): the source text that declares class `name`, or '' (also used by unity-messages.js). */
+export function classSourceLookup(app) {
   const readFile = async (path) => {
     const tab = app.editors.findTab(path);
     if (tab && tab.model) return tab.model.getValue();
@@ -101,6 +102,11 @@ export function registerOverrideCompletion(app) {
     }
     return '';
   }
+  return sourceOf;
+}
+
+export function registerOverrideCompletion(app) {
+  const sourceOf = classSourceLookup(app);
 
   /** Overridable methods of `name` and its ancestors, most derived first. */
   async function membersOf(name, seen = new Set(), depth = 0) {

@@ -22,7 +22,8 @@ const keywordFirst = (it) => {
   return !!(c && c.kind === KEYWORD && it.word && it.textLabel.toLowerCase().startsWith(it.word.trim().toLowerCase()));
 };
 // our [SerializeField] snippet a hair above Roslyn's bare SerializeField type
-const rank = (it) => it.score[0] + (it.completion && it.completion.__unityAttr ? ATTRIBUTE_BONUS + (it.completion.__snippet ? 1 : 0) : 0);
+// Unity messages (Update, OnTriggerEnter...) get the same bonus, see unity-messages.js
+const rank = (it) => it.score[0] + (it.completion && (it.completion.__unityAttr || it.completion.__unityMsg) ? ATTRIBUTE_BONUS + (it.completion.__snippet ? 1 : 0) : 0);
 // Monaco reads this static when each list is created (and the snippets-up/down variants call it),
 // so replacing it before the first suggestion affects every list.
 CompletionModel._compareCompletionItems = (a, b) => {
@@ -72,7 +73,7 @@ export const UNITY_ATTRIBUTE_NAMES = new Set([
  * body), 'namespace' (or file level), or 'code' (method, property, enum...). Skips comments,
  * strings and char literals so braces inside them don't count.
  */
-function braceContext(text) {
+export function braceContext(text) {
   const stack = [];
   let stmt = 0; // start of the current statement/header
   const n = text.length;
