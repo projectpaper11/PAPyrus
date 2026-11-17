@@ -39,7 +39,7 @@ export const SCHEMA = [
       { key: 'editor.formatOnPaste', label: '붙여넣을 때 서식 적용 (C#)', type: 'bool', desc: '붙여넣은 코드의 들여쓰기와 중괄호 위치를 정리해요.' },
       { key: 'editor.allmanBraces', label: '{ 뒤 Enter로 블록 펼치기', type: 'bool', desc: 'if () { 에서 Enter를 누르면 { 를 다음 줄로 내리고 블록을 열어요 (Rider 기본).' },
       { key: 'csharp.namespaceCheck', label: '네임스페이스가 폴더와 다르면 경고 (C#)', type: 'bool', desc: '네임스페이스가 없거나 폴더 위치와 다르면 노란 줄을 그어요. Ctrl+.로 바로 맞출 수 있어요 (Plugins·외부 에셋은 제외).' },
-      { key: 'editor.removeUnusedUsings', label: '안 쓰는 using 자동 정리 (C#)', type: 'select', options: [['auto', '바로 (방금 입력한 using은 저장할 때)'], ['onSave', '저장할 때'], ['off', '끄기']], desc: '쓰지 않는 using과 찾을 수 없는 네임스페이스의 using을 지워요. 직접 하려면 "using 정리" (Ctrl+Alt+O).' },
+      { key: 'editor.removeUnusedUsings', label: '안 쓰는 using 자동 정리 (C#)', type: 'select', options: [['auto', '바로 (방금 입력한 using은 저장할 때)'], ['onSave', '저장할 때'], ['off', '끄기']], desc: '쓰지 않는 using과 찾을 수 없는 네임스페이스의 using을 지워요. 코드에 찾을 수 없는 이름(빨간 줄)이 있으면 어떤 using이 필요한지 알 수 없어서 지우지 않고, AI 등 외부에서 바뀐 파일은 여기서 편집하기 전까지 건드리지 않아요. 직접 하려면 "using 정리" (Ctrl+Alt+O).' },
         { key: 'editor.learnedCompletions', label: '학습형 자동완성', type: 'bool', desc: '줄의 첫 단어를 입력할 때 자주 쓰는 줄을 제안하고, Unity 스니펫(sf, awake, dlog…)도 보여 줘요.' },
     ],
   },
@@ -69,6 +69,7 @@ export const SCHEMA = [
     id: 'lsp', title: 'C# 언어 서버', icon: 'symbol-namespace', items: [
       { key: 'lsp.path', label: '언어 서버 경로', type: 'text', desc: '"auto"면 roslyn-language-server(dotnet tool)를 써요. OmniSharp 경로를 넣어도 돼요.', restart: true },
       { key: 'lsp.autoRestore', label: '필요하면 dotnet restore 자동 실행', type: 'bool' },
+      { key: 'lsp.solutionErrors', label: '프로젝트 전체 오류 검사', type: 'bool', desc: '열지 않은 파일까지 컴파일 오류를 찾아서, 오류가 있는 스크립트와 그 폴더를 탐색기에 빨간색으로 표시해요 (Rider의 Solution-wide analysis). 끄면 열린 파일만 표시해요.', restart: true },
     ],
   },
   {

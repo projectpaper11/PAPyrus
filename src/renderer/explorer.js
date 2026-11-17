@@ -531,9 +531,11 @@ export class Explorer {
     const inPin = this.viewRoot && !samePath(this.viewRoot, this.root);
     const dim = !inPin && r.depth === 1 && !['Assets', 'Packages'].includes(r.name) && r.dir;
     const cut = this.clipboard && this.clipboard.cut && samePath(this.clipboard.path, r.path);
-    const row = el('div.tree-row' + (isSel ? '.selected' : '') + (dim ? '.dim' : '') + (cut ? '.cut' : ''), {
+    const errors = this.errorCount(r.path);
+    const row = el('div.tree-row' + (isSel ? '.selected' : '') + (dim ? '.dim' : '') + (cut ? '.cut' : '') + (errors ? '.has-error' : ''), {
       style: { paddingLeft: 6 + r.depth * 16 + 'px' },
       'data-path': r.path,
+      title: errors ? `오류 ${errors}개` : undefined,
       // dragged with the mouse (setupPointerDrag): onto a folder = move, onto the hierarchy /
       // inspector = attach the script / fill an object field
       ondragstart: (e) => e.preventDefault(), // dragged with the mouse instead (setupPointerDrag)
@@ -567,6 +569,21 @@ export class Explorer {
     r.isRoot ? el('span.hint', null, r.pinned ? relPath(this.root, r.path).replace(/\\/g, '/')
       : this.app.project ? relPath('', this.app.project).replace(/\\/g, '/') : '') : null);
     return row;
+  }
+
+  /** Compile errors in the file / under the folder (FileErrors): red like Rider. */
+  errorCount(path) {
+    return this.app.fileErrors ? this.app.fileErrors.count(path) : 0;
+  }
+
+  /** The error marks changed: recolor the rows shown, without rebuilding the tree. */
+  applyErrors() {
+    for (const row of this.el.querySelectorAll('.tree-row')) {
+      const n = this.errorCount(row.dataset.path);
+      row.classList.toggle('has-error', n > 0);
+      if (n) row.title = `오류 ${n}개`;
+      else row.removeAttribute('title');
+    }
   }
 
   isDir(path) {

@@ -296,6 +296,8 @@ class LspServer {
     conn.onRequest('workspace/configuration', (params) =>
       (params.items || []).map((it) => {
         const key = it.section || '';
+        // compiler errors of closed files too, for the explorer (analyzers stay on open files: they cost more)
+        if (key === 'csharp|background_analysis.dotnet_compiler_diagnostics_scope') return this.settings['lsp.solutionErrors'] === false ? 'openFiles' : 'fullSolution';
         if (key in ROSLYN_CONFIG) return ROSLYN_CONFIG[key];
         if (key === 'csharp|code_style.formatting.indentation_and_spacing.tab_width') return this.settings['editor.tabSize'] || 4;
         if (key === 'csharp|code_style.formatting.indentation_and_spacing.indent_size') return this.settings['editor.tabSize'] || 4;

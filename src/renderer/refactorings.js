@@ -1302,7 +1302,9 @@ export class Refactorings {
         }
         if (Object.keys(edits).length) await this.app.editors.applyWorkspaceEdit({ changes: edits });
       }
-      for (const t of this.app.editors.tabs || []) if (t.dirty && t.path && /\.cs$/i.test(t.path)) await this.app.editors.save(t);
+      // no using cleanup on these saves: Roslyn hasn't seen the moved namespaces yet, so the usings
+      // just added would look unresolvable
+      for (const t of this.app.editors.tabs || []) if (t.dirty && t.path && /\.cs$/i.test(t.path)) await this.app.editors.save(t, { skipUsings: true });
       this.app.unityRefreshSoon();
       toast({ title, message: `스크립트 ${todo.length}개의 네임스페이스를 바꿨어요${touched.size ? `, 사용하는 파일 ${touched.size}개 확인` : ''}.`, timeout: 4000 });
     } catch (e) {

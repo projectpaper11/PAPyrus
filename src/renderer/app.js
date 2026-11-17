@@ -25,6 +25,7 @@ import { CodeMemory } from './code-memory.js';
 import './unity-completions.js';
 import { registerOverrideCompletion } from './override-completions.js';
 import { registerUnityMessageCompletion } from './unity-messages.js';
+import { FileErrors } from './file-errors.js';
 import { Refactorings } from './refactorings.js';
 import { UsingCleanup } from './using-cleanup.js';
 import { UnityFeatures } from './unity-features.js';
@@ -105,7 +106,10 @@ class App {
     this.lsp.isEditableModel = (m) => this.editors.tabs.some((t) => t.model === m);
     this.logoUrl = logoUrl;
     this.keys = new Keybindings(this);
+    this.fileErrors = new FileErrors(this);
+    this.fileErrors.attach(this.lsp);
     this.explorer = new Explorer(this);
+    this.fileErrors.onChange(() => this.explorer.applyErrors());
     this.inspector = new Inspector(this);
     this.structure = new StructureView(this);
     this.panels = new Panels(this);
@@ -1280,9 +1284,14 @@ class App {
     }, { category: '로컬 히스토리' });
     G('papyrus.projectHistory', '로컬 히스토리: 프로젝트 최근 변경 (되돌리기)', null, () => this.localHistory.showProject(), { category: '로컬 히스토리' });
     E('papyrus.optimizeUsings', 'using 정리 (안 쓰는 using 지우기)', 'Ctrl+Alt+O', async () => {
-      const n = await this.usingCleanup.cleanNow(this.editors.editor.getModel());
-      if (n < 0) toast({ kind: 'warn', title: 'using 정리', message: 'C# 언어 서버가 아직 분석 중이에요. 잠시 뒤에 다시 해 보세요.', timeout: 3000 });
-      else toast({ title: 'using 정리', message: n ? `using ${n}개를 지웠어요.` : '지울 using이 없어요.', timeout: 2000 });
+      const r = await this.usingCleanup.cleanNow(this.editors.editor.getModel());
+      if (r === -1) toast({ kind: 'warn', title: 'using 정리', message: 'C# 언어 서버가 아직 분석 중이에요. 잠시 뒤에 다시 해 보세요.', timeout: 3000 });
+      else if (typeof r === 'object') {
+        const why = r.kept === 'errors'
+          ? '코드에 오류(빨간 줄)가 있어서 안 쓰는 것처럼 보이는 using을 그대로 뒀어요. 어떤 using이 필요한지 알 수 없어요. 오류를 먼저 고친 뒤에 다시 해 보세요.'
+          : '#if로 꺼진 코드(회색)가 있어서 안 쓰는 것처럼 보이는 using을 그대로 뒀어요. 꺼진 코드에서 쓰는 using일 수 있어요.';
+        toast({ kind: 'warn', title: 'using 정리', message: (r.removed ? `using ${r.removed}개를 지웠어요. ` : '') + why, timeout: 5000 });
+      } else toast({ title: 'using 정리', message: r ? `using ${r}개를 지웠어요.` : '지울 using이 없어요.', timeout: 2000 });
     }, cat);
     E('papyrus.formatDocument', '문서 서식', 'Shift+Alt+F', () => this.editorAction('editor.action.formatDocument'), { monaco: 'editor.action.formatDocument', ...cat });
     M('editor.action.formatSelection', '선택 영역 서식', 'Ctrl+K Ctrl+F', cat);

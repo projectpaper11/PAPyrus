@@ -27,7 +27,15 @@ export class LspClient {
     this.onShowDocument = onShowDocument;
     this.onMessage = onMessage;
     this.pullTimers = new Map();
+    this.pullRetries = new Map(); // uri -> incomplete pull rounds in a row
     this.ready = false;
+    // workspace pull diagnostics (every file of the solution, see startWorkspaceDiagnostics)
+    this.wsDiagRegs = new Map(); // registration id -> identifier (registrations with workspaceDiagnostics)
+    this.wsResults = new Map(); // identifier -> Map(uri -> { resultId, items })
+    this.wsLoops = new Set(); // identifiers being polled
+    this.wsGen = 0; // bumped on start/stop: older loops end
+    this.workspaceErrors = new Map(); // uri -> error count, from the workspace results
+    this.onWorkspaceDiagnostics = null;
 
     api.onStatus((st) => this.handleStatus(st));
     api.onNotification(({ method, params }) => this.handleNotification(method, params));
@@ -41,6 +49,7 @@ export class LspClient {
     this.caps = null;
     this.ready = false;
     this.diagRegs.clear();
+    this.resetWorkspaceDiagnostics();
     const res = await api.start();
     if (res && res.ok) {
       this.caps = res.capabilities || {};
@@ -54,6 +63,7 @@ export class LspClient {
 
   async stop() {
     this.caps = null;
+    this.resetWorkspaceDiagnostics();
     this.disposeProviders();
     await api.stop();
   }
@@ -62,7 +72,7 @@ export class LspClient {
     this.status = st;
     if (st.state === 'ready' && !this.ready) {
       this.ready = true;
-      setTimeout(() => this.pullAll(), 300);
+      setTimeout(() => { this.pullAll(); this.startWorkspaceDiagnostics(); }, 300);
     }
     if (st.state === 'error' || st.state === 'stopped') this.ready = false;
     this.onStatus && this.onStatus(st);
@@ -74,21 +84,25 @@ export class LspClient {
         const d = this.docs.get(normUri(params.uri));
         this.lastDiagnostics.set(normUri(params.uri), params.diagnostics || []);
         const model = d ? d.model : monaco.editor.getModel(monaco.Uri.parse(params.uri));
-        this.diagVersion.set(normUri(params.uri), params.version != null ? params.version : d ? d.version : -1);
+        // without a version they may be for older text: fresh only for a push-only server (no pulls)
+        this.diagVersion.set(normUri(params.uri), params.version != null ? params.version : d && !this.pullIdentifiers().length ? d.version : -1);
         if (model) monaco.editor.setModelMarkers(model, 'lsp', (params.diagnostics || []).filter(cv.visibleDiagnostic).map(cv.toMarker));
         if (model && this.onDiagnostics) this.onDiagnostics(model, params.diagnostics || []);
+        this.onDocsChange && this.onDocsChange(); // explorer error marks (file-errors.js)
         break;
       }
       case '$papyrus/registerCapability':
         for (const r of params.registrations || []) {
           if (r.method === 'textDocument/diagnostic') {
-            this.diagRegs.set(r.id, (r.registerOptions && r.registerOptions.identifier) || '');
-            setTimeout(() => this.pullAll(), 50);
+            const o = r.registerOptions || {};
+            this.diagRegs.set(r.id, o.identifier || '');
+            if (o.workspaceDiagnostics) this.wsDiagRegs.set(r.id, o.identifier || '');
+            setTimeout(() => { this.pullAll(); if (this.ready) this.startWorkspaceDiagnostics(); }, 50);
           }
         }
         break;
       case '$papyrus/unregisterCapability':
-        for (const r of params.unregisterations || params.unregistrations || []) this.diagRegs.delete(r.id);
+        for (const r of params.unregisterations || params.unregistrations || []) { this.diagRegs.delete(r.id); this.wsDiagRegs.delete(r.id); }
         break;
       case 'workspace/diagnostic/refresh':
       case 'workspace/projectInitializationComplete':
@@ -181,6 +195,7 @@ export class LspClient {
     });
     this.docs.set(uri, d);
     this.sendOpen(d);
+    this.onDocsChange && this.onDocsChange();
   }
 
   sendOpen(d) {
@@ -197,7 +212,9 @@ export class LspClient {
     d.sub.dispose();
     this.docs.delete(uri);
     this.pullResults.delete(uri);
+    this.pullRetries.delete(uri);
     this.notify('textDocument/didClose', { textDocument: { uri } });
+    this.onDocsChange && this.onDocsChange();
   }
 
   saved(model) {
@@ -234,6 +251,20 @@ export class LspClient {
     return this.lastDiagnostics.get(normUri(model.uri.toString())) || [];
   }
 
+  /**
+   * Does the file have code #if leaves out (Roslyn's excludedCode semantic tokens)? null when it
+   * can't tell (no such token type, request failed).
+   */
+  async hasExcludedCode(model) {
+    const legend = this.caps && this.caps.semanticTokensProvider && this.caps.semanticTokensProvider.legend;
+    const idx = legend ? (legend.tokenTypes || []).indexOf('excludedCode') : -1;
+    if (idx < 0) return null;
+    const r = await this.request('textDocument/semanticTokens/full', { textDocument: { uri: model.uri.toString() } });
+    if (!r || !Array.isArray(r.data)) return null;
+    for (let i = 3; i < r.data.length; i += 5) if (r.data[i] === idx) return true;
+    return false;
+  }
+
   pullNow(model) {
     this.schedulePull(normUri(model.uri.toString()), 0);
   }
@@ -261,26 +292,128 @@ export class LspClient {
     const version = d.version;
     let store = this.pullResults.get(uri);
     if (!store) this.pullResults.set(uri, (store = new Map()));
+    // Each identifier (syntax, compiler, analyzers...) answers on its own. One that was cancelled /
+    // hit ContentModified still holds the previous text's items (other line numbers): this round
+    // is then incomplete and must not count as the diagnostics of this version (the using cleanup
+    // removes lines by them).
+    let incomplete = false;
     await Promise.all(this.pullIdentifiers().map(async (identifier) => {
       const prev = store.get(identifier);
       const params = { textDocument: { uri }, previousResultId: prev ? prev.resultId : undefined };
       if (identifier) params.identifier = identifier;
-      const res = await this.request('textDocument/diagnostic', params);
-      if (!res) return;
+      const r = await this.send('textDocument/diagnostic', params);
+      const res = r.error ? null : r.result;
+      if (!res) {
+        if (r.error && (r.error.code === -32800 || r.error.code === -32801 || /cancel/i.test(r.error.message || ''))) incomplete = true;
+        else store.delete(identifier); // not supported for this file: nothing from it
+        return;
+      }
       if (res.kind === 'unchanged') {
         if (prev) prev.resultId = res.resultId || prev.resultId;
+        else incomplete = true; // nothing to keep: ask again in full
       } else {
         store.set(identifier, { resultId: res.resultId, items: res.items || [] });
       }
     }));
     const cur = this.docs.get(uri);
     if (!cur || cur.version !== version) return; // stale; a newer pull is scheduled
+    if (incomplete) {
+      // ask again soon; after a few tries show what there is (squiggles), still not as fresh
+      const tries = (this.pullRetries.get(uri) || 0) + 1;
+      this.pullRetries.set(uri, tries);
+      if (tries <= 5) { this.schedulePull(uri, 300 * tries); return; }
+    } else this.pullRetries.delete(uri);
     const all = [];
     for (const v of store.values()) all.push(...v.items);
     this.lastDiagnostics.set(uri, all);
-    this.diagVersion.set(uri, version);
+    this.diagVersion.set(uri, incomplete ? -1 : version); // incomplete: shown, never "fresh"
     monaco.editor.setModelMarkers(cur.model, 'lsp', all.filter(cv.visibleDiagnostic).map(cv.toMarker));
     if (this.onDiagnostics) this.onDiagnostics(cur.model, all);
+    this.onDocsChange && this.onDocsChange();
+  }
+
+  // ------------------------------------------------------------------ workspace diagnostics
+  // Errors of files that aren't open (for the explorer). Roslyn answers workspace/diagnostic with
+  // what changed since the result ids we send; with nothing new it holds the request until
+  // something changes (long poll), so each identifier runs a loop of back-to-back requests.
+  workspaceIdentifiers() {
+    // Roslyn also registers 'enc' / 'HotReloadDiagnostics' (debug sessions only): they answer at once, empty
+    const ids = new Set([...this.wsDiagRegs.values()].filter((id) => !/^(enc|HotReloadDiagnostics)$/i.test(id)));
+    const dp = this.caps && this.caps.diagnosticProvider;
+    if (!ids.size && dp && dp.workspaceDiagnostics) ids.add(dp.identifier || '');
+    return [...ids];
+  }
+
+  resetWorkspaceDiagnostics() {
+    this.wsGen++;
+    this.wsDiagRegs.clear();
+    this.wsResults.clear();
+    this.wsLoops.clear();
+    if (this.wsCancel) { this.wsCancel.cancel(); this.wsCancel = null; }
+    if (this.workspaceErrors.size) {
+      this.workspaceErrors = new Map();
+      this.onWorkspaceDiagnostics && this.onWorkspaceDiagnostics();
+    }
+  }
+
+  startWorkspaceDiagnostics() {
+    if (!this.caps) return;
+    if (!this.wsCancel) this.wsCancel = new monaco.CancellationTokenSource();
+    for (const id of this.workspaceIdentifiers()) {
+      if (!this.wsLoops.has(id)) this.workspaceLoop(id, this.wsGen, this.wsCancel.token);
+    }
+  }
+
+  async workspaceLoop(identifier, gen, token) {
+    this.wsLoops.add(identifier);
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    let store = this.wsResults.get(identifier);
+    if (!store) this.wsResults.set(identifier, (store = new Map()));
+    while (gen === this.wsGen && this.caps && this.workspaceIdentifiers().includes(identifier)) {
+      const t0 = Date.now();
+      const params = { previousResultIds: [...store].filter(([, v]) => v.resultId).map(([uri, v]) => ({ uri, value: v.resultId })) };
+      if (identifier) params.identifier = identifier;
+      const r = await this.send('workspace/diagnostic', params, token);
+      if (gen !== this.wsGen) return;
+      if (r.error || !r.result) {
+        await wait(r.error && r.error.code === -32801 ? 500 : 5000); // ContentModified: soon again
+        continue;
+      }
+      let changed = false;
+      for (const rep of r.result.items || []) {
+        if (!rep || !rep.uri) continue;
+        const uri = normUri(rep.uri);
+        if (rep.kind === 'unchanged') {
+          const prev = store.get(uri);
+          if (prev) prev.resultId = rep.resultId || prev.resultId;
+        } else {
+          store.set(uri, { resultId: rep.resultId, items: rep.items || [] });
+          changed = true;
+        }
+      }
+      if (changed) this.updateWorkspaceErrors();
+      // a server that answers at once instead of waiting: don't spin
+      const spent = Date.now() - t0;
+      if (spent < 3000) await wait(3000 - spent);
+    }
+    if (gen === this.wsGen) this.wsLoops.delete(identifier);
+  }
+
+  updateWorkspaceErrors() {
+    const errors = new Map();
+    for (const store of this.wsResults.values()) {
+      for (const [uri, v] of store) {
+        const n = v.items.filter((d) => (d.severity || 1) === 1).length;
+        if (n) errors.set(uri, (errors.get(uri) || 0) + n);
+      }
+    }
+    this.workspaceErrors = errors;
+    this.onWorkspaceDiagnostics && this.onWorkspaceDiagnostics();
+  }
+
+  /** Is this file open in the client (its own pulled diagnostics are newer than the workspace's)? */
+  isOpenUri(uri) {
+    return this.docs.has(normUri(uri));
   }
 
   // ------------------------------------------------------------------ providers

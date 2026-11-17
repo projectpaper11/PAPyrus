@@ -834,7 +834,7 @@ export class Editors {
     try {
       const g = tab.group;
       // unused / broken usings out first (Rider's optimize usings on save)
-      if (!skipUsings && this.app.usingCleanup && tab.model.getLanguageId() === 'csharp') this.app.usingCleanup.beforeSave(tab.model);
+      if (!skipUsings && this.app.usingCleanup && tab.model.getLanguageId() === 'csharp') await this.app.usingCleanup.beforeSave(tab.model);
       if (this.app.settings['editor.formatOnSave'] && tab.model.getLanguageId() === 'csharp' && g && g.active === tab) {
         await g.editor.getAction('editor.action.formatDocument')?.run();
       }
@@ -906,6 +906,8 @@ export class Editors {
     const shown = this.tabsOfModel(m).find((t) => t.group && t.group.active === t);
     const sel = shown ? shown.group.editor.getSelections() : null;
     m.pushEditOperations([], [{ range: full, text: res.text }], () => sel);
+    // written by someone else (an AI agent...): its usings are left alone until edited here
+    if (this.app.usingCleanup) this.app.usingCleanup.reloadedFromDisk(m);
     for (const t of this.tabsOfModel(m)) {
       t.savedVersion = m.getAlternativeVersionId();
       t.dirty = false;

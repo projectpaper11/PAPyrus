@@ -52,6 +52,7 @@ const defaults = {
   'lsp.path': 'auto',
   'lsp.args': [],
   'lsp.autoRestore': true,
+  'lsp.solutionErrors': true, // compile errors of every file, not just open ones (Rider: solution-wide analysis), red in the explorer
   'explorer.hideProjectFiles': true,
   'explorer.renameClassWithFile': false, // remembered "rename the class too" checkbox of file rename
   'files.exclude': ['Library', 'Temp', 'Logs', 'obj', 'UserSettings', 'Build', 'Builds', '.git', '.vs', '.idea', '.vscode', 'MemoryCaptures'],
