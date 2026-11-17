@@ -83,7 +83,7 @@ const C = {
   constant: '66C3CC',
   param: 'BDBDBD',
   local: 'BDBDBD',
-  ns: 'BDBDBD',
+  ns: '9E9E9E', // namespace names (using / namespace lines) a shade dimmer than code, like Rider
   preproc: '787878',
   op: 'BDBDBD',
   event: 'ED94C0',
@@ -386,7 +386,8 @@ monaco.editor.defineTheme('papyrus-light', {
     { token: 'event-name', foreground: L.event },
     { token: 'parameter', foreground: L.text },
     { token: 'variable', foreground: L.text },
-    { token: 'namespace', foreground: L.text },
+    { token: 'namespace', foreground: '6E6E6E' },
+    { token: 'namespace-name', foreground: '6E6E6E' },
     { token: 'keyword-control', foreground: L.keyword },
     { token: 'excluded-code', foreground: 'A0A0A0' },
     { token: 'preprocessor-keyword', foreground: L.preproc },

@@ -5,6 +5,7 @@ const path = require('path');
 const { shell } = require('electron');
 const iconv = require('iconv-lite');
 const settings = require('./settings');
+const localHistory = require('./local-history');
 
 const BINARY_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.psd', '.tga', '.tif', '.tiff', '.exr', '.hdr', '.bmp', '.ico',
   '.fbx', '.obj', '.blend', '.dae', '.3ds', '.max', '.ma', '.mb', '.wav', '.mp3', '.ogg', '.aif', '.aiff', '.flac',
@@ -224,6 +225,16 @@ function watchProject(root, onChange) {
 // ------------------------------------------------------------ IPC
 function register(ipcMain, sessionFor) {
   const watchers = new Map();
+  // local history of the window's project for a path in it (errors there never block the file operation)
+  const hist = (e, p, fn) => {
+    try {
+      const h = localHistory.historyFor((sessionFor(e.sender) || {}).project, p);
+      if (h) fn(h);
+    } catch (err) {
+      console.error('local history:', err);
+    }
+  };
+  localHistory.register(ipcMain, sessionFor, decode);
 
   ipcMain.handle('fs:listDir', (_e, dir, opts) => listDir(dir, opts));
   ipcMain.handle('fs:listAllFiles', (_e, root) => listAllFiles(root));
@@ -247,27 +258,32 @@ function register(ipcMain, sessionFor) {
     const st = await fsp.stat(p);
     return { ...decode(buf), mtimeMs: st.mtimeMs };
   });
-  ipcMain.handle('fs:writeFile', async (_e, { path: p, text, encoding }) => {
+  ipcMain.handle('fs:writeFile', async (e, { path: p, text, encoding }) => {
+    hist(e, p, (h) => h.beforeWrite(p));
     await fsp.mkdir(path.dirname(p), { recursive: true });
     await fsp.writeFile(p, encode(text, encoding || 'utf8'));
+    hist(e, p, (h) => h.afterWrite(p));
     const st = await fsp.stat(p);
     return { mtimeMs: st.mtimeMs };
   });
-  ipcMain.handle('fs:createFile', async (_e, { path: p, text }) => {
+  ipcMain.handle('fs:createFile', async (e, { path: p, text }) => {
     if (fs.existsSync(p)) throw new Error('이미 같은 이름의 파일이 있어요');
+    hist(e, p, (h) => h.beforeWrite(p)); // "no file" before it: reverting past this removes it
     await fsp.mkdir(path.dirname(p), { recursive: true });
     await fsp.writeFile(p, encode(text || '', 'utf8bom'));
+    hist(e, p, (h) => h.afterWrite(p, 'created'));
     return true;
   });
   ipcMain.handle('fs:createFolder', async (_e, p) => {
     await fsp.mkdir(p, { recursive: true });
     return true;
   });
-  ipcMain.handle('fs:rename', async (_e, { from, to }) => {
+  ipcMain.handle('fs:rename', async (e, { from, to }) => {
     if (fs.existsSync(to)) throw new Error('이미 같은 이름이 있어요');
     await fsp.rename(from, to);
     // keep Unity .meta in sync so GUIDs survive the rename
     if (fs.existsSync(from + '.meta')) await fsp.rename(from + '.meta', to + '.meta');
+    hist(e, to, (h) => h.renamed(from, to));
     return true;
   });
   // Copy a file or folder. Unity .meta files stay behind: a copy with the same GUID would clash,
@@ -284,7 +300,8 @@ function register(ipcMain, sessionFor) {
     });
     return true;
   });
-  ipcMain.handle('fs:trash', async (_e, p) => {
+  ipcMain.handle('fs:trash', async (e, p) => {
+    hist(e, p, (h) => h.beforeDelete(p));
     await shell.trashItem(p);
     if (fs.existsSync(p + '.meta')) await shell.trashItem(p + '.meta');
     return true;

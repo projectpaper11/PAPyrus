@@ -1,6 +1,7 @@
 // Settings tab (VS Code-style): grouped options on the left, keybinding editor included.
 import { el, icon, toast, debounce } from './ui.js';
 import { eventToKey, displayKey, normalizeKey } from './keybindings.js';
+import { KEYMAPS, keymapLabel } from './keymaps.js';
 
 export const SCHEMA = [
   {
@@ -26,6 +27,7 @@ export const SCHEMA = [
       { key: 'editor.formatOnType', label: '입력하면서 서식 적용', type: 'bool', desc: '; 나 } 를 입력하면 해당 줄을 정리해요.' },
       { key: 'editor.formatOnPaste', label: '붙여넣을 때 서식 적용 (C#)', type: 'bool', desc: '붙여넣은 코드의 들여쓰기와 중괄호 위치를 정리해요.' },
       { key: 'editor.allmanBraces', label: '{ 뒤 Enter로 블록 펼치기', type: 'bool', desc: 'if () { 에서 Enter를 누르면 { 를 다음 줄로 내리고 블록을 열어요 (Rider 기본).' },
+      { key: 'csharp.namespaceCheck', label: '네임스페이스가 폴더와 다르면 경고 (C#)', type: 'bool', desc: '네임스페이스가 없거나 폴더 위치와 다르면 노란 줄을 그어요. Ctrl+.로 바로 맞출 수 있어요 (Plugins·외부 에셋은 제외).' },
       { key: 'editor.removeUnusedUsings', label: '안 쓰는 using 자동 정리 (C#)', type: 'select', options: [['auto', '바로 (방금 입력한 using은 저장할 때)'], ['onSave', '저장할 때'], ['off', '끄기']], desc: '쓰지 않는 using과 찾을 수 없는 네임스페이스의 using을 지워요. 직접 하려면 "using 정리" (Ctrl+Alt+O).' },
         { key: 'editor.learnedCompletions', label: '학습형 자동완성', type: 'bool', desc: '줄의 첫 단어를 입력할 때 자주 쓰는 줄을 제안하고, Unity 스니펫(sf, awake, dlog…)도 보여 줘요.' },
     ],
@@ -37,6 +39,8 @@ export const SCHEMA = [
       { key: 'explorer.hideProjectFiles', label: '탐색기에서 .sln / .csproj 숨기기', type: 'bool' },
       { key: 'files.exclude', label: '탐색기·검색에서 제외할 폴더', type: 'list', desc: '한 줄에 하나씩' },
       { key: 'search.excludeFolders', label: '검색에서 뺄 외부 폴더 (플러그인·에셋)', type: 'list', desc: '이름 검색과 파일에서 찾기에서 빠져요 (탐색기에는 보여요). 폴더 이름 또는 Assets/경로, 한 줄에 하나씩' },
+      { key: 'history.enabled', label: '로컬 히스토리', type: 'bool', desc: '저장·이름 바꾸기·삭제할 때마다 이전 내용을 남겨요. 탭·파일 우클릭 → "로컬 히스토리"에서 비교하고 되돌릴 수 있어요.' },
+      { key: 'history.days', label: '로컬 히스토리 보관 기간 (일)', type: 'number', min: 1, max: 365 },
       { key: 'reopenLastProject', label: '시작할 때 마지막 프로젝트 열기', type: 'bool' },
     ],
   },
@@ -58,6 +62,7 @@ export const SCHEMA = [
   },
   {
     id: 'keyboard', title: '키보드', icon: 'keyboard', items: [
+      { key: 'keyboard.keymap', label: '키맵', type: 'select', options: Object.entries(KEYMAPS).map(([v, m]) => [v, m.label]), desc: '기본 단축키 묶음이에요. 단축키 화면에서 직접 바꾼 키는 키맵을 바꿔도 그대로예요.' },
       { key: 'keyboard.doubleShift', label: 'Shift 두 번으로 Search Everywhere 열기', type: 'bool' },
     ],
   },
@@ -185,10 +190,14 @@ export class SettingsView {
       if (!rows.length) table.append(el('div.empty-msg', null, '일치하는 명령이 없어요.'));
     };
     renderRows();
+    const keymapSel = el('select.settings-input.keymap-select', {
+      title: '키맵',
+      onchange: (e) => this.app.setSetting('keyboard.keymap', e.target.value).then(() => this.render && this.render()),
+    }, ...Object.entries(KEYMAPS).map(([v, m]) => el('option', { value: v, selected: v === K.keymap }, m.label)));
     wrap.append(
       el('h2', null, '단축키'),
-      el('p.si-desc', null, '기본값은 Visual Studio Code 키맵이에요. 단축키를 더블클릭하거나 ✎를 눌러 바꿀 수 있어요. Ctrl+K Ctrl+S 처럼 두 번 누르는 조합도 돼요.'),
-      el('div.keytools', null, search, recordSearch, onlyCustom,
+      el('p.si-desc', null, `지금 키맵은 ${keymapLabel(K.keymap)}이에요. 단축키를 더블클릭하거나 ✎를 눌러 바꿀 수 있어요. Ctrl+K Ctrl+S 처럼 두 번 누르는 조합도 돼요.`),
+      el('div.keytools', null, el('label.keymap-label', null, '키맵', keymapSel), search, recordSearch, onlyCustom,
         el('button.btn', { onclick: () => this.resetAllKeys(renderRows) }, icon('discard'), '모두 기본값으로')),
       table);
     return wrap;
@@ -229,7 +238,7 @@ export class SettingsView {
 
   setKeys(id, keys, rerender) {
     const map = { ...(this.app.settings.keybindings || {}) };
-    const def = this.app.keys.commands.get(id).keys;
+    const def = this.app.keys.defaultKeys(id);
     if (keys.length === def.length && keys.every((k, i) => k === def[i])) delete map[id];
     else map[id] = keys;
     this.app.setSetting('keybindings', map).then(rerender);
@@ -242,7 +251,7 @@ export class SettingsView {
   }
 
   async resetAllKeys(rerender) {
-    const r = await window.papyrus.app.confirm({ message: '모든 단축키를 기본값(VS Code)으로 되돌릴까요?', buttons: ['되돌리기', '취소'] });
+    const r = await window.papyrus.app.confirm({ message: `직접 바꾼 단축키를 모두 지우고 키맵(${keymapLabel(this.app.keys.keymap)}) 기본값으로 되돌릴까요?`, buttons: ['되돌리기', '취소'] });
     if (r === 0) this.app.setSetting('keybindings', {}).then(rerender);
   }
 

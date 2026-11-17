@@ -1,8 +1,10 @@
-// Command registry + keybinding dispatcher (VS Code keymap by default, user-overridable).
+// Command registry + keybinding dispatcher. Keys: the user's own > the keymap preset (keymaps.js:
+// Visual Studio Code by default, or Visual Studio) > the command's own (= VS Code).
 //
 // Key strings look like "Ctrl+Shift+K", chords "Ctrl+K Ctrl+S". Keys are derived from
 // KeyboardEvent.code so shortcuts keep working while the Korean IME is active.
 import { monaco } from './monaco.js';
+import { KEYMAPS } from './keymaps.js';
 
 const CODE_MAP = {
   Slash: '/', Backslash: '\\', Period: '.', Comma: ',', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']',
@@ -81,6 +83,8 @@ export class Keybindings {
     this.app = app;
     this.commands = new Map();
     this.user = {};
+    this.keymap = 'vscode';
+    this.preset = {}; // id -> keys of the chosen keymap (only where it differs from VS Code)
     this.pending = null; // first half of a chord
     this.recording = false;
     this.monacoUnbinds = null;
@@ -101,6 +105,20 @@ export class Keybindings {
     return c;
   }
 
+  /** 'vscode' | 'vs' (keymaps.js). Call setUserBindings after it (that re-syncs Monaco). */
+  setKeymap(name) {
+    this.keymap = KEYMAPS[name] ? name : 'vscode';
+    this.preset = {};
+    for (const [id, v] of Object.entries(KEYMAPS[this.keymap].keys)) this.preset[id] = v.map(normalizeKey);
+  }
+
+  /** The keys a command has without the user's changes (the keymap's). */
+  defaultKeys(id) {
+    if (id in this.preset) return this.preset[id];
+    const c = this.commands.get(id);
+    return c ? c.keys : [];
+  }
+
   setUserBindings(map) {
     this.user = {};
     for (const [id, v] of Object.entries(map || {})) {
@@ -111,8 +129,7 @@ export class Keybindings {
 
   keysFor(id) {
     if (id in this.user) return this.user[id];
-    const c = this.commands.get(id);
-    return c ? c.keys : [];
+    return this.defaultKeys(id);
   }
 
   isCustom(id) {
@@ -143,12 +160,13 @@ export class Keybindings {
     }
   }
 
-  // When a Monaco command is remapped, its built-in default key must stop triggering it.
+  // When a Monaco command is remapped (by the keymap or the user), its built-in default key
+  // (= the command's own VS Code key) must stop triggering it.
   syncMonaco() {
     if (this.monacoUnbinds) this.monacoUnbinds.dispose();
     const rules = [];
     for (const c of this.commands.values()) {
-      if (!c.monaco || !this.isCustom(c.id)) continue;
+      if (!c.monaco || !(this.isCustom(c.id) || c.id in this.preset)) continue;
       for (const k of c.keys) {
         if (this.keysFor(c.id).includes(k)) continue;
         const kb = keyToMonaco(k);

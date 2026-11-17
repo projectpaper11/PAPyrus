@@ -27,6 +27,8 @@ import { registerOverrideCompletion } from './override-completions.js';
 import { Refactorings } from './refactorings.js';
 import { UsingCleanup } from './using-cleanup.js';
 import { UnityFeatures } from './unity-features.js';
+import { LocalHistory } from './local-history.js';
+import { NamespaceCheck } from './namespace-check.js';
 import { showLocationPopup, popupPoint } from './location-popup.js';
 import { el, icon, basename, dirname, relPath, joinPath, contextMenu, toast, debounce, samePath, extname } from './ui.js';
 
@@ -89,7 +91,13 @@ class App {
     this.usingCleanup = new UsingCleanup(this);
     this.lsp.onDiagnostics = (model, diags) => this.usingCleanup.onDiagnostics(model, diags);
     this.unityFeatures = new UnityFeatures(this);
-    this.lsp.onRename = (model, position, newName, result) => this.unityFeatures.onRename(model, position, newName, result);
+    this.localHistory = new LocalHistory(this);
+    this.namespaceCheck = new NamespaceCheck(this);
+    this.lsp.onRename = async (model, position, newName, result) => {
+      const w = model.getWordAtPosition(position);
+      await this.localHistory.label(`이름 바꾸기: ${w ? w.word : '?'} → ${newName}`);
+      return this.unityFeatures.onRename(model, position, newName, result);
+    };
     this.lsp.isEditableModel = (m) => this.editors.tabs.some((t) => t.model === m);
     this.logoUrl = logoUrl;
     this.keys = new Keybindings(this);
@@ -427,6 +435,7 @@ class App {
 
   async indexFiles() {
     this.fileIndex = await O.fs.listAllFiles(this.project);
+    if (this.namespaceCheck) this.namespaceCheck.recheckAll(); // asmdefs (rootNamespace) are known now
   }
 
   async goto(g) {
@@ -1236,6 +1245,12 @@ class App {
     E('papyrus.safeDelete', '안전 삭제', 'Alt+Delete', () => this.refactor.safeDelete(), cat);
     E('papyrus.extractInterface', '인터페이스 추출', null, () => this.refactor.extractInterface(), cat);
     E('papyrus.adjustNamespaces', '네임스페이스를 폴더에 맞추기', null, () => this.refactor.adjustCurrentNamespace(), cat);
+    G('papyrus.localHistory', '로컬 히스토리: 현재 파일', null, () => {
+      const t = this.editors.active;
+      if (t && !t.special && t.path) this.localHistory.showFile(t.path);
+      else toast({ title: '로컬 히스토리', message: '파일 탭에서 쓸 수 있어요.', timeout: 2500 });
+    }, { category: '로컬 히스토리' });
+    G('papyrus.projectHistory', '로컬 히스토리: 프로젝트 최근 변경 (되돌리기)', null, () => this.localHistory.showProject(), { category: '로컬 히스토리' });
     E('papyrus.optimizeUsings', 'using 정리 (안 쓰는 using 지우기)', 'Ctrl+Alt+O', async () => {
       const n = await this.usingCleanup.cleanNow(this.editors.editor.getModel());
       if (n < 0) toast({ kind: 'warn', title: 'using 정리', message: 'C# 언어 서버가 아직 분석 중이에요. 잠시 뒤에 다시 해 보세요.', timeout: 3000 });
@@ -1271,6 +1286,7 @@ class App {
     M('editor.unfoldAll', '모두 펼치기', 'Ctrl+K Ctrl+J', cat);
     M('editor.fold', '접기', 'Ctrl+Shift+[', cat);
     M('editor.unfold', '펼치기', 'Ctrl+Shift+]', cat);
+    M('editor.toggleFold', '접기/펼치기 전환', 'Ctrl+K Ctrl+L', cat);
     G('papyrus.toggleWordWrap', '자동 줄 바꿈 전환', 'Alt+Z', () => {
       const cur = this.editors.editor.getOption(monaco.editor.EditorOption.wordWrap);
       this.editors.updateAllOptions({ wordWrap: cur === 'off' ? 'on' : 'off' });
@@ -1357,6 +1373,7 @@ class App {
     G('papyrus.setupWizard', '설정 도우미 (자동 설치)', [], () => this.setup.open(), { icon: 'zap', ...cat });
     G('papyrus.devtools', '개발자 도구', 'Ctrl+Shift+I', () => O.app.toggleDevTools(), { icon: 'tools', ...cat });
 
+    this.keys.setKeymap(this.settings['keyboard.keymap']);
     this.keys.setUserBindings(this.settings.keybindings || {});
   }
 
@@ -1425,7 +1442,9 @@ class App {
     this.applyTheme();
     this.editors.applySettings(s);
     this.lsp.codeLensEnabled = s['editor.codeLens'] !== false;
+    if (this.namespaceCheck && prev['csharp.namespaceCheck'] !== s['csharp.namespaceCheck']) this.namespaceCheck.recheckAll();
     if (this.unityFeatures && ['unity.assetLenses', 'unity.stringChecks', 'unity.performanceHints'].some((k) => prev[k] !== s[k])) this.unityFeatures.settingsChanged();
+    this.keys.setKeymap(s['keyboard.keymap']);
     this.keys.setUserBindings(s.keybindings || {});
     if (JSON.stringify(prev['files.exclude']) !== JSON.stringify(s['files.exclude']) || prev['explorer.hideProjectFiles'] !== s['explorer.hideProjectFiles']) {
       this.explorer.refresh();

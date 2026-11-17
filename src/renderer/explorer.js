@@ -48,6 +48,8 @@ public class ${n} : ScriptableObject
 }`, ['UnityEditor', 'UnityEngine']),
 };
 
+const MOVE_MIME = 'application/x-papyrus-move'; // a tree row being dragged (moved when dropped on a folder)
+
 function wrapNs(ns, body, usings) {
   const u = usings.map((x) => `using ${x};\n`).join('') + (usings.length ? '\n' : '');
   if (!ns) return u + body + '\n';
@@ -82,11 +84,220 @@ export class Explorer {
     // Pinned folders: tabs over the tree, each shows only its folder (like browser tabs)
     this.pins = [];
     this.viewRoot = null; // what the tree shows: the project, or the active pinned folder
-    this.pinsEl = el('div.ex-pins');
+    this.pinsEl = el('div.ex-pins', {
+      // many pinned folders: the mouse wheel scrolls the tab row sideways
+      onwheel: (e) => {
+        const p = this.pinsEl;
+        if (p.scrollWidth <= p.clientWidth) return;
+        const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        if (!d) return;
+        e.preventDefault();
+        p.scrollLeft += e.deltaMode === 1 ? d * 20 : d;
+      },
+    });
     this.view = el('div.explorer-view', null,
       this.pinsEl,
       el('div.ex-search-wrap', null, el('div.ex-search', null, icon('search'), this.searchInput, this.searchCount)),
       this.el);
+    this.setupDragMove();
+  }
+
+  // ------------------------------------------------------------------ drag & drop move
+  // A file or folder dragged onto a folder of the tree moves there (with its .meta, then the
+  // namespace offer, like Cut/Paste). While dragging, the tree scrolls by itself near its top or
+  // bottom edge, the mouse wheel scrolls it, and a closed folder held over for a moment opens.
+  setupDragMove() {
+    this.drag = null; // { path, y, raf, hoverDir, hoverSince, target }
+    const scroller = () => this.view.parentElement || this.view;
+    const targetDir = (e) => {
+      const row = e.target.closest && e.target.closest('.tree-row');
+      if (!row) return this.el.contains(e.target) || e.target === this.el ? this.viewRoot || this.root : null;
+      const r = this.rows.find((x) => samePath(x.path, row.dataset.path));
+      if (!r) return null;
+      return r.dir ? r.path : dirname(r.path);
+    };
+    const canDrop = (from, dir) => {
+      if (!from || !dir) return false;
+      if (samePath(dirname(from), dir) || samePath(from, dir)) return false;
+      const f = from.toLowerCase().replace(/[\\/]+$/, '');
+      const d = dir.toLowerCase();
+      return !(d.startsWith(f + '\\') || d.startsWith(f + '/')); // not into itself
+    };
+    const mark = (dir) => {
+      if (this.drag && this.drag.target === dir) return;
+      this.el.querySelectorAll('.tree-row.drop-target').forEach((x) => x.classList.remove('drop-target'));
+      if (this.drag) this.drag.target = dir;
+      if (!dir) return;
+      const row = [...this.el.querySelectorAll('.tree-row')].find((x) => samePath(x.dataset.path, dir));
+      if (row) row.classList.add('drop-target');
+      else if (samePath(dir, this.viewRoot || this.root)) this.el.classList.add('drop-root');
+    };
+    // edge auto-scroll: faster the closer to the edge
+    const tick = () => {
+      const d = this.drag;
+      if (!d) return;
+      if (Date.now() - d.lastOver > 300) d.y = null; // not over the tree any more
+      const s = scroller();
+      const rect = s.getBoundingClientRect();
+      const top = rect.top + (this.pinsEl.classList.contains('show') ? 30 : 0) + 34; // under the sticky pins + search box
+      const zone = Math.min(56, rect.height / 4);
+      let v = 0;
+      if (d.y != null && d.y < top + zone) v = -Math.ceil(((top + zone - d.y) / zone) * 18);
+      else if (d.y != null && d.y > rect.bottom - zone) v = Math.ceil(((d.y - (rect.bottom - zone)) / zone) * 18);
+      if (v) s.scrollTop += v;
+      d.raf = requestAnimationFrame(tick);
+    };
+    this.dragStart = (path) => {
+      this.dragEnd();
+      this.drag = { path, y: null, raf: 0, hoverDir: null, hoverSince: 0, target: null, lastOver: Date.now() };
+      this.drag.raf = requestAnimationFrame(tick);
+    };
+    this.dragEnd = () => {
+      if (!this.drag) return;
+      cancelAnimationFrame(this.drag.raf);
+      this.drag = null;
+      this.el.querySelectorAll('.tree-row.drop-target').forEach((x) => x.classList.remove('drop-target'));
+      this.el.classList.remove('drop-root');
+    };
+    this.view.addEventListener('dragover', (e) => {
+      const d = this.drag;
+      if (!d || !e.dataTransfer.types.includes(MOVE_MIME)) return;
+      d.y = e.clientY;
+      d.lastOver = Date.now();
+      const dir = targetDir(e);
+      this.el.classList.remove('drop-root');
+      if (!canDrop(d.path, dir)) {
+        mark(null);
+        e.dataTransfer.dropEffect = 'none';
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      mark(dir);
+      // hold over a closed folder: it opens
+      if (d.hoverDir !== dir) { d.hoverDir = dir; d.hoverSince = Date.now(); }
+      else if (Date.now() - d.hoverSince > 700 && !this.expanded.has(dir) && this.isDir(dir)) {
+        d.hoverSince = Infinity;
+        this.toggle(dir, true);
+      }
+    });
+    // pointer left the panel: keep scrolling only while it is still over the panel's edges
+    this.view.addEventListener('dragleave', (e) => {
+      if (this.drag && !this.view.contains(e.relatedTarget)) {
+        this.drag.y = null;
+        mark(null);
+        this.el.classList.remove('drop-root');
+      }
+    });
+    // the wheel while dragging (Chromium may skip its own scrolling during a drag)
+    this.view.addEventListener('wheel', (e) => {
+      if (!this.drag) return;
+      e.preventDefault();
+      scroller().scrollTop += e.deltaMode === 1 ? e.deltaY * 20 : e.deltaY;
+    }, { passive: false });
+    this.view.addEventListener('drop', async (e) => {
+      const d = this.drag;
+      if (!d || !e.dataTransfer.types.includes(MOVE_MIME)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const dir = targetDir(e);
+      const from = d.path;
+      this.dragEnd();
+      if (canDrop(from, dir)) await this.moveTo(from, dir);
+    });
+    this.setupPointerDrag();
+  }
+
+  // The tree's rows are dragged with the mouse, not the browser's drag & drop: during a native drag
+  // Windows delivers no wheel events (the tree couldn't be scrolled). The drop targets (folders
+  // here, the inspector / hierarchy) still get ordinary dragenter/dragover/dragleave/drop events,
+  // with a DataTransfer holding the same data as before, so they need no change.
+  setupPointerDrag() {
+    let arm = null; // mousedown on a row: { x, y, row: r }
+    let pd = null; // a drag going on: { dt, ghost, target, x, y, accepted, timer }
+    let swallowClick = false;
+    const send = (type, target, x, y, related) => {
+      if (!target) return false;
+      pd.dt.dropEffect = 'none';
+      const ev = new DragEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, dataTransfer: pd.dt, relatedTarget: related || null });
+      target.dispatchEvent(ev);
+      return ev.defaultPrevented && pd.dt.dropEffect !== 'none';
+    };
+    const over = () => {
+      if (!pd) return;
+      const t = document.elementFromPoint(pd.x, pd.y);
+      if (t !== pd.target) {
+        if (pd.target && pd.target.isConnected) send('dragleave', pd.target, pd.x, pd.y, t);
+        if (t) send('dragenter', t, pd.x, pd.y, pd.target);
+        pd.target = t;
+      }
+      pd.accepted = send('dragover', t, pd.x, pd.y);
+      document.body.classList.toggle('pdrag-no', !pd.accepted);
+      pd.ghost.style.transform = `translate(${pd.x + 14}px, ${pd.y + 10}px)`;
+    };
+    const start = (r, x, y) => {
+      const dt = new DataTransfer();
+      // a DataTransfer made by script ignores dropEffect writes: keep the targets' answer ourselves
+      let effect = 'none';
+      Object.defineProperty(dt, 'dropEffect', { get: () => effect, set: (v) => { effect = String(v); }, configurable: true });
+      if (!r.dir) {
+        dt.setData('application/x-papyrus-path', r.path);
+        dt.setData('application/x-papyrus-ext' + extname(r.path), '1');
+        dt.setData('text/plain', r.path);
+      }
+      dt.setData(MOVE_MIME, r.path);
+      const ghost = el('div.drag-ghost', null, fileIcon(r.name, r.dir), el('span', null, r.name));
+      document.body.append(ghost);
+      document.body.classList.add('pdrag');
+      pd = { dt, ghost, target: null, x, y, accepted: false, timer: 0 };
+      this.dragStart(r.path);
+      // like a native drag: dragover keeps coming while the mouse rests (edge scroll, folder opening)
+      pd.timer = setInterval(over, 60);
+      over();
+    };
+    const finish = (drop) => {
+      if (!pd) return;
+      const p = pd;
+      clearInterval(p.timer);
+      if (drop && p.accepted && p.target && p.target.isConnected) send('drop', p.target, p.x, p.y);
+      else if (p.target && p.target.isConnected) send('dragleave', p.target, p.x, p.y, null);
+      p.ghost.remove();
+      document.body.classList.remove('pdrag', 'pdrag-no');
+      pd = null;
+      this.dragEnd();
+    };
+    this.armDrag = (e, r) => {
+      if (e.button !== 0 || r.isRoot || e.ctrlKey || e.shiftKey || e.altKey) return;
+      arm = { x: e.clientX, y: e.clientY, row: r };
+    };
+    window.addEventListener('mousemove', (e) => {
+      if (arm && !pd) {
+        if (!(e.buttons & 1)) { arm = null; return; }
+        if (Math.abs(e.clientX - arm.x) + Math.abs(e.clientY - arm.y) < 6) return;
+        start(arm.row, e.clientX, e.clientY);
+        arm = null;
+      }
+      if (!pd) return;
+      e.preventDefault(); // no text selection while dragging
+      pd.x = e.clientX;
+      pd.y = e.clientY;
+      over();
+    }, true);
+    window.addEventListener('mouseup', (e) => {
+      arm = null;
+      if (!pd) return;
+      swallowClick = true; // the click that follows this mouseup isn't a click on a row
+      setTimeout(() => { swallowClick = false; });
+      finish(e.button === 0);
+    }, true);
+    window.addEventListener('click', (e) => {
+      if (swallowClick) { swallowClick = false; e.stopPropagation(); e.preventDefault(); }
+    }, true);
+    window.addEventListener('keydown', (e) => {
+      if (pd && e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+    }, true);
+    window.addEventListener('blur', () => finish(false));
   }
 
   // ------------------------------------------------------------------ pinned folders (tabs)
@@ -323,16 +534,11 @@ export class Explorer {
     const row = el('div.tree-row' + (isSel ? '.selected' : '') + (dim ? '.dim' : '') + (cut ? '.cut' : ''), {
       style: { paddingLeft: 6 + r.depth * 16 + 'px' },
       'data-path': r.path,
-      draggable: r.dir ? null : 'true',
-      ondragstart: (e) => {
-        // dropped on the hierarchy / inspector: scripts get attached, assets fill object fields.
-        // dragover handlers can't read the data, so the extension also travels as a type.
-        e.dataTransfer.setData('application/x-papyrus-path', r.path);
-        e.dataTransfer.setData('application/x-papyrus-ext' + extname(r.path), '1');
-        e.dataTransfer.setData('text/plain', r.path);
-        e.dataTransfer.effectAllowed = 'copyLink';
-      },
+      // dragged with the mouse (setupPointerDrag): onto a folder = move, onto the hierarchy /
+      // inspector = attach the script / fill an object field
+      ondragstart: (e) => e.preventDefault(), // dragged with the mouse instead (setupPointerDrag)
       onmousedown: (e) => {
+        this.armDrag(e, r);
         if (e.button !== 0) return;
         this.select(r.path);
         if (r.dir && e.detail === 1 && e.target.closest('.twisty')) this.toggle(r.path);
@@ -475,7 +681,8 @@ export class Explorer {
       default: {
         // Ctrl+C / Ctrl+X / Ctrl+V like Rider's Solution Explorer; Ctrl+D = Rider's Copy... (F5 is Play here)
         const k = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey ? e.key.toLowerCase() : '';
-        if (k === 'd' && cur && !cur.isRoot) this.copyTo(cur.path, dirname(cur.path));
+        if (k === 'z') this.undo();
+        else if (k === 'd' && cur && !cur.isRoot) this.copyTo(cur.path, dirname(cur.path));
         else if (k === 'c' && cur && !cur.isRoot) this.setClipboard(cur.path, false);
         else if (k === 'x' && cur && !cur.isRoot) this.setClipboard(cur.path, true);
         else if (k === 'v' && cur) this.paste(cur.dir ? cur.path : dirname(cur.path));
@@ -483,6 +690,57 @@ export class Explorer {
       }
     }
     e.preventDefault();
+  }
+
+  // ------------------------------------------------------------------ undo (Ctrl+Z in the tree)
+  // Moves and renames done here (drag & drop, cut/paste, F2). When nothing else was written since,
+  // the project goes back to the local history label put down before it: the file returns with its
+  // .meta, and what came with it (class rename, namespace fix) is undone too. Otherwise only the
+  // file goes back.
+  pushUndo(entry) {
+    const e = { ...entry, endAt: Date.now() };
+    this.undoStack = (this.undoStack || []).concat(e).slice(-30);
+    return e;
+  }
+
+  async undo() {
+    const e = (this.undoStack || []).pop();
+    if (!e) {
+      toast({ title: '되돌리기', message: '탐색기에서 되돌릴 이동·이름 바꾸기가 없어요.', timeout: 2000 });
+      return;
+    }
+    const H = window.papyrus.history;
+    let later = [];
+    if (this.app.settings['history.enabled'] !== false) {
+      try { later = (await H.recent(100)).filter((x) => x.t > e.endAt + 20); } catch { later = null; }
+    }
+    if (later && !later.length && this.app.settings['history.enabled'] !== false) {
+      await this.app.localHistory.revertProject(e.T - 1, { quiet: true });
+    }
+    if (!(await ofs.exists(e.from))) {
+      // something else changed since: only the file goes back
+      if (!(await ofs.exists(e.to)) || (await ofs.exists(e.from))) {
+        toast({ kind: 'warn', title: '되돌릴 수 없어요', message: `${basename(e.to)}이(가) 그 뒤로 다시 옮겨졌거나 같은 이름이 있어요.`, timeout: 3500 });
+        return;
+      }
+      try {
+        const tab = this.app.editors.findTab(e.to);
+        if (tab && tab.dirty) await this.app.editors.save(tab);
+        await ofs.rename(e.to, e.from);
+        if (tab) {
+          await this.app.editors.closeTab(tab, { force: true, noHistory: true });
+          await this.app.editors.open(e.from);
+        }
+      } catch (err) {
+        toast({ kind: 'error', title: '되돌릴 수 없어요', message: String(err.message || err) });
+        return;
+      }
+    }
+    this.expanded.add(dirname(e.from));
+    await this.refresh([e.from, e.to]);
+    this.select(e.from);
+    this.app.unityRefreshSoon();
+    toast({ title: '되돌렸어요', message: `${e.what}: ${basename(e.to)} → ${relPath(this.app.project, e.from)}`, timeout: 2500 });
   }
 
   // ------------------------------------------------------------------ copy / cut / paste
@@ -674,6 +932,8 @@ export class Explorer {
       name = v.trim();
     }
     const to = joinPath(dir, name);
+    const T = Date.now();
+    await this.app.localHistory.label(`이동: ${basename(path)} → ${relPath(this.app.project, dir) || '/'}`);
     try {
       const tab = this.app.editors.findTab(path);
       if (tab && tab.dirty) await this.app.editors.save(tab);
@@ -690,12 +950,13 @@ export class Explorer {
     await this.refresh([path, to]);
     this.select(to);
     this.app.unityRefreshSoon();
+    const undo = this.pushUndo({ what: '이동', from: path, to, T });
     if (offerNamespace) {
       const isDir = !!((await ofs.stat(to)) || {}).dir;
       const scripts = isDir ? (await ofs.listAllFiles(to)).filter((f) => /\.cs$/i.test(f)) : /\.cs$/i.test(to) ? [to] : [];
       // where each script was before the move
       const fromDirOf = (f) => dirname(isDir ? path + f.slice(to.length) : path);
-      if (scripts.length) this.offerNamespaceFix(scripts.slice(0, 500), fromDirOf).catch(() => {});
+      if (scripts.length) this.offerNamespaceFix(scripts.slice(0, 500), fromDirOf, undo).catch(() => {});
     }
   }
 
@@ -736,6 +997,7 @@ export class Explorer {
         ? { label: '고정 해제', icon: 'pinned', action: () => this.unpin(path) }
         : { label: '탭으로 고정', icon: 'pin', action: () => this.pin(path) }] : []),
       '-',
+      ...(isDir ? [] : [{ label: '로컬 히스토리…', icon: 'history', action: () => this.app.localHistory.showFile(path) }]),
       { label: '경로 복사', icon: 'link', action: () => navigator.clipboard.writeText(path) },
       { label: '파일 탐색기에서 열기', icon: 'folder-opened', action: () => window.papyrus.app.reveal(path) },
       { label: '새로고침', icon: 'refresh', action: () => this.refresh() },
@@ -759,7 +1021,7 @@ export class Explorer {
   }
 
   /** Scripts that followed their folder's namespace before a move: offer to follow the new folder. */
-  async offerNamespaceFix(scripts, fromDirOf) {
+  async offerNamespaceFix(scripts, fromDirOf, undo) {
     const follow = [];
     for (const f of scripts) {
       const text = (await ofs.readFile(f)).text || '';
@@ -773,7 +1035,8 @@ export class Explorer {
     toast({
       title: '네임스페이스도 옮길까요?',
       message: follow.length === 1 ? `${basename(follow[0])}의 네임스페이스가 예전 폴더 기준이에요.` : `스크립트 ${follow.length}개의 네임스페이스가 예전 폴더 기준이에요.`,
-      actions: [{ label: '폴더에 맞추기', action: () => this.app.refactor.adjustNamespaces(follow, { tickAll: true }) }],
+      // taken right after the move: Ctrl+Z in the explorer undoes both
+      actions: [{ label: '폴더에 맞추기', action: async () => { await this.app.refactor.adjustNamespaces(follow, { tickAll: true }); if (undo) undo.endAt = Date.now(); } }],
       timeout: 12000,
     });
   }
@@ -870,6 +1133,8 @@ export class Explorer {
     const name = r && (typeof r === 'string' ? r : r.value).trim();
     if (!name || name === old) return;
     const to = joinPath(dirname(path), name);
+    const T = Date.now();
+    await this.app.localHistory.label(`이름 바꾸기: ${old} → ${name}`);
     try {
       if (isCs && r.checked && /\.cs$/i.test(name)) await this.renameClassForFile(path, old.slice(0, -3), name.slice(0, -3));
       const tab = this.app.editors.findTab(path);
@@ -879,6 +1144,7 @@ export class Explorer {
         await this.refresh([path, to]);
         this.select(to);
         this.app.unityRefreshSoon();
+        this.pushUndo({ what: '이름 바꾸기', from: path, to, T });
         return;
       }
       await ofs.rename(path, to);
@@ -889,6 +1155,7 @@ export class Explorer {
       await this.refresh([path, to]);
       this.select(to);
       this.app.unityRefreshSoon();
+      this.pushUndo({ what: '이름 바꾸기', from: path, to, T });
     } catch (err) {
       toast({ kind: 'error', title: '이름을 바꿀 수 없어요', message: String(err.message || err) });
     }

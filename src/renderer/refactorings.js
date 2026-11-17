@@ -353,7 +353,7 @@ function wholeLines(text, start, end) {
 
 // ====================================================================== the dialogs' frame
 
-function modal({ title, width = 460 }) {
+export function modal({ title, width = 460 }) {
   let done;
   const result = new Promise((r) => { done = r; });
   const body = el('div.cd-body');
@@ -1207,7 +1207,8 @@ export class Refactorings {
   }
 
   /** Rider's "Adjust Namespaces": each script's namespace follows its folder, usings follow the types. */
-  async adjustNamespaces(paths, { title = '네임스페이스를 폴더에 맞추기', tickAll = paths.length === 1 } = {}) {
+  // confirm: false (Ctrl+. quick fix on one script) applies the plan without the dialog
+  async adjustNamespaces(paths, { title = '네임스페이스를 폴더에 맞추기', tickAll = paths.length === 1, confirm = true } = {}) {
     if (!this.lsp.running) {
       toast({ kind: 'warn', title, message: 'C# 언어 서버가 준비된 뒤에 다시 시도하세요. (사용처에 using을 추가하려면 필요해요)', timeout: 4000 });
       return;
@@ -1235,6 +1236,14 @@ export class Refactorings {
       return;
     }
 
+    if (confirm && !(await this.confirmNamespacePlan(plan, title, skipped))) return;
+    const todo = plan.filter((p) => p.box.checked);
+    if (!todo.length) return;
+    await this.app.localHistory.label('네임스페이스 맞추기');
+    await this.applyNamespacePlan(todo, title);
+  }
+
+  async confirmNamespacePlan(plan, title, skipped) {
     const { body, foot, close, result } = modal({ title, width: 640 });
     body.replaceChildren(
       el('div.rf-table', { style: { padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '320px' } },
@@ -1250,10 +1259,10 @@ export class Refactorings {
     const all = el('button.btn', { style: { marginRight: 'auto' }, onclick: () => { const on = !plan.every((x) => x.box.checked); plan.forEach((x) => { x.box.checked = on; }); recount(); } }, '모두 선택/해제');
     foot.replaceChildren(...(plan.length > 1 ? [all] : []), el('button.btn', { onclick: () => close(null) }, '취소'), ok);
     ok.focus();
-    if (!(await result)) return;
-    const todo = plan.filter((p) => p.box.checked);
-    if (!todo.length) return;
+    return !!(await result);
+  }
 
+  async applyNamespacePlan(todo, title) {
     try {
       const before = await this.projectNamespaces();
       const touched = new Set();

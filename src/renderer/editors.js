@@ -752,6 +752,7 @@ export class Editors {
       ...splitItems,
       ...groupItems,
       '-',
+      ...(t.special || !t.path ? [] : [{ label: '로컬 히스토리…', icon: 'history', action: () => this.app.localHistory.showFile(t.path) }, '-']),
       { label: '경로 복사', icon: 'copy', action: () => navigator.clipboard.writeText(t.path) },
       { label: '상대 경로 복사', action: () => navigator.clipboard.writeText(relPath(this.app.project, t.path)) },
       { label: '탐색기에서 선택', icon: 'target', action: () => this.app.explorer.reveal(t.path) },
@@ -916,6 +917,9 @@ export class Editors {
 
   // ------------------------------------------------------------------ workspace edits
   async applyWorkspaceEdit(we) {
+    // several files at once: a local history label first, so the whole edit can be undone in one go
+    const uris = new Set([...(we.documentChanges || []).map((d) => (d.textDocument ? d.textDocument.uri : d.uri || d.oldUri)), ...Object.keys(we.changes || {})]);
+    if (uris.size > 1) await this.app.localHistory.label('여러 파일 수정');
     const byUri = new Map();
     const add = (uri, edits) => byUri.set(uri, (byUri.get(uri) || []).concat(edits));
     if (we.documentChanges) {

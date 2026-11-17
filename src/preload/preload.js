@@ -69,6 +69,14 @@ contextBridge.exposeInMainWorld('papyrus', {
     installDotnet: () => ipcRenderer.invoke('setup:installDotnet'),
     installLsp: () => ipcRenderer.invoke('setup:installLsp'),
   },
+  history: {
+    file: (p) => ipcRenderer.invoke('history:file', p),
+    content: (hash) => ipcRenderer.invoke('history:content', hash),
+    recent: (limit) => ipcRenderer.invoke('history:recent', limit),
+    label: (text) => ipcRenderer.invoke('history:label', text),
+    changesSince: (t) => ipcRenderer.invoke('history:changesSince', t),
+    revertTo: (t) => ipcRenderer.invoke('history:revertTo', t),
+  },
   unity: {
     start: () => ipcRenderer.invoke('unity:start'),
     send: (cmd) => ipcRenderer.send('unity:send', cmd),

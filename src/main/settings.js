@@ -9,6 +9,7 @@ const defaults = {
   'setup.dontShow': false,
   'workbench.theme': 'dark',
   'keyboard.doubleShift': true,
+  'keyboard.keymap': 'vscode', // 'vscode' | 'vs' (Visual Studio): default keys, see src/renderer/keymaps.js
   keybindings: {},
   'files.autoSave': 'onFocusChange', // save when switching tabs or leaving the window, like Rider
   'files.autoSaveDelay': 1000,
@@ -18,6 +19,7 @@ const defaults = {
   'editor.formatOnType': true,
   'editor.formatOnPaste': true, // pasted code is formatted (Roslyn): indentation, braces on their own line
   'editor.allmanBraces': true, // Enter after `{` moves it to its own line and opens the block, like Rider
+  'csharp.namespaceCheck': true, // warn when a script's namespace doesn't match its folder (Rider), Ctrl+. fixes it
   'editor.removeUnusedUsings': 'auto', // 'auto' | 'onSave' | 'off': unused / unresolvable using directives are removed (Rider's optimize usings)
   'editor.learnedCompletions': true,
   'editor.codeLens': true,
@@ -35,6 +37,8 @@ const defaults = {
   'unity.assetLenses': true, // "used in 2 prefabs" lenses on scripts and UnityEvent methods
   'unity.formerlySerializedAs': true, // renaming a serialized field adds [FormerlySerializedAs("old")]
   'unity.stringChecks': true, // completion + typo warnings for tags, layers, scenes, animator parameters...
+  'history.enabled': true, // local history: a snapshot of each file before/after PAPyrus writes it
+  'history.days': 30, // how long local history is kept
   'unity.performanceHints': true, // GetComponent / Find ... in Update-like methods
   // "auto" = roslyn-language-server dotnet tool. Set a path to use another server (e.g. OmniSharp).
   'lsp.path': 'auto',
