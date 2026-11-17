@@ -105,6 +105,17 @@ body.rainbow {
 }
 body.rainbow #titlebar { border-bottom: 0; background-image: var(--rainbow); background-size: 100% 2px; background-repeat: no-repeat; background-position: bottom; }
 body.rainbow .tab.active::after { background: var(--rainbow); }
+/* explorer: names and folder icons take the rainbow color of their depth (like the indent guides) */
+body.rainbow .tree-row[data-rb="0"] { --rb: #ff6b8b; }
+body.rainbow .tree-row[data-rb="1"] { --rb: #ffa94d; }
+body.rainbow .tree-row[data-rb="2"] { --rb: #ffe066; }
+body.rainbow .tree-row[data-rb="3"] { --rb: #7ce38b; }
+body.rainbow .tree-row[data-rb="4"] { --rb: #4fe3d2; }
+body.rainbow .tree-row[data-rb="5"] { --rb: #5cc8ff; }
+body.rainbow .tree-row[data-rb="6"] { --rb: #b18cff; }
+body.rainbow .tree-row .label, body.rainbow .tree-row .ficon.folder { color: var(--rb, var(--fg)); }
+body.rainbow .tree-row.dim .label, body.rainbow .tree-row.dim .ficon.folder { color: var(--fg-dim); }
+body.rainbow .tree-row.has-error .label { color: var(--err-text); }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg-panel); color: var(--fg); font: var(--ui-size)/1.4 var(--ui-font); user-select: none; }

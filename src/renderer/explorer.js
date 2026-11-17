@@ -535,6 +535,7 @@ export class Explorer {
     const row = el('div.tree-row' + (isSel ? '.selected' : '') + (dim ? '.dim' : '') + (cut ? '.cut' : '') + (errors ? '.has-error' : ''), {
       style: { paddingLeft: 6 + r.depth * 16 + 'px' },
       'data-path': r.path,
+      'data-rb': r.depth % 7, // rainbow theme: one color per depth, like the editor's indent guides
       title: errors ? `오류 ${errors}개` : undefined,
       // dragged with the mouse (setupPointerDrag): onto a folder = move, onto the hierarchy /
       // inspector = attach the script / fill an object field
