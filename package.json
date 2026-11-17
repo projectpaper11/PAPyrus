@@ -1,7 +1,7 @@
 {
   "name": "papyrus",
   "productName": "PAPyrus",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "PAPyrus — lightweight C# IDE for Unity",
   "main": "src/main/main.js",
   "private": true,
