@@ -814,6 +814,7 @@ namespace Papyrus.Ide.Editor
                 var fg = GetForegroundWindow();
                 if (fg != s_LastFg)
                 {
+                    ReleaseClosedPopups();
                     AdoptPopup(fg, s_LastFg);
                     s_LastFg = fg;
                 }
@@ -920,6 +921,30 @@ namespace Papyrus.Ide.Editor
             SendMainBehindIde();
         }
 
+        /// <summary>
+        /// Unity hides and reuses some popups (object picker, color picker) instead of closing them. One
+        /// adopted while it was opened from our window stayed "ours": opened later from Unity itself, it
+        /// sent Unity's main window behind the IDE, so the IDE jumped over Unity while the user worked
+        /// there. Once a popup is gone or hidden it goes back to Unity's main window.
+        /// </summary>
+        static void ReleaseClosedPopups()
+        {
+            if (s_Adopted.Count == 0) return;
+            List<IntPtr> gone = null;
+            foreach (var h in s_Adopted)
+            {
+                if (IsWindow(h) && IsWindowVisible(h)) continue;
+                (gone ?? (gone = new List<IntPtr>())).Add(h);
+            }
+            if (gone == null) return;
+            foreach (var h in gone)
+            {
+                s_Adopted.Remove(h);
+                if (s_Main != IntPtr.Zero && IsWindow(h) && GetWindow(h, GW_OWNER) == s_Hwnd)
+                    SetWindowLongPtr(h, GWLP_HWNDPARENT, s_Main);
+            }
+        }
+
         /// <summary>Unity's main window directly below the IDE window, if it is somewhere above it.</summary>
         static void SendMainBehindIde()
         {
@@ -953,6 +978,7 @@ namespace Papyrus.Ide.Editor
         [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+        [DllImport("user32.dll")] static extern bool IsWindow(IntPtr hwnd);
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hwnd);
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);

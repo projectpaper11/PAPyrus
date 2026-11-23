@@ -406,6 +406,10 @@ class App {
 
     this.slnAtStart = await this.hasSolution();
     O.unity.start();
+    // the project runs its own copy of the Unity package: bring it up to this PAPyrus version
+    O.unity.updatePackage().then((updated) => {
+      if (updated) toast({ kind: 'info', title: 'Unity 패키지를 최신 버전으로 업데이트했어요', message: 'Unity가 컴파일을 마치면 적용돼요.', timeout: 6000 });
+    });
     this.startLsp();
     if (this.isUnityProject) {
       O.unity.ensureAnalyzers().then((r) => {

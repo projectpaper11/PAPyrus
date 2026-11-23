@@ -83,6 +83,7 @@ contextBridge.exposeInMainWorld('papyrus', {
     send: (cmd) => ipcRenderer.send('unity:send', cmd),
     mirrorPlace: (rect) => ipcRenderer.send('unity:mirrorPlace', rect),
     installPackage: () => ipcRenderer.invoke('unity:installPackage'),
+    updatePackage: () => ipcRenderer.invoke('unity:updatePackage'),
     ensureAnalyzers: () => ipcRenderer.invoke('unity:ensureAnalyzers'),
     scanAssets: (root) => ipcRenderer.invoke('unity:scanAssets', root),
     projectData: (root) => ipcRenderer.invoke('unity:projectData', root),

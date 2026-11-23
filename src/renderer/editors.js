@@ -2,7 +2,7 @@
 import { monaco } from './monaco.js';
 import { el, icon, basename, dirname, extname, fileIcon, contextMenu, toast, relPath, samePath } from './ui.js';
 import * as cv from './conv.js';
-import { allmanEnter, singleStatementIndent } from './brace-enter.js';
+import { allmanEnter, closedListIndent, parenEnterIndent, singleStatementIndent } from './brace-enter.js';
 import { maskCode } from './script-copy.js';
 
 const ofs = window.papyrus.fs;
@@ -455,9 +455,28 @@ export class Editors {
       ed.revealPosition({ lineNumber: ln, column: back.length + 1 });
       return;
     }
-    if (this.app.settings['editor.allmanBraces'] === false) return plain();
-    const r = allmanEnter(line.slice(0, pos.column - 1), line.slice(pos.column - 1), unit);
-    if (!r) return plain();
+    const before = line.slice(0, pos.column - 1);
+    const after = line.slice(pos.column - 1);
+    const maskedBefore = maskCode(line).slice(0, before.length);
+    const row = pos.lineNumber - 1;
+    const r = this.app.settings['editor.allmanBraces'] === false ? null
+      : allmanEnter(before, after, unit, closedListIndent(lineAt, row, maskedBefore) ?? undefined);
+    if (!r) {
+      // inside / right after a multi-line parameter or argument list (brace-enter.js)
+      const indent = parenEnterIndent(lineAt, row, maskedBefore, unit);
+      if (indent === null) return plain();
+      const nl = model.getEOL();
+      const ln = pos.lineNumber + 1;
+      ed.pushUndoStop();
+      ed.executeEdits('papyrus.parenEnter', [{
+        range: new monaco.Range(pos.lineNumber, 1, pos.lineNumber, line.length + 1),
+        text: before.replace(/[ \t]+$/, '') + nl + indent + after.replace(/^[ \t]+/, ''),
+        forceMoveMarkers: true,
+      }], [new monaco.Selection(ln, indent.length + 1, ln, indent.length + 1)]);
+      ed.pushUndoStop();
+      ed.revealPosition({ lineNumber: ln, column: indent.length + 1 });
+      return;
+    }
     const ln = pos.lineNumber + r.caretLine;
     ed.pushUndoStop();
     ed.executeEdits('papyrus.braceEnter', [{

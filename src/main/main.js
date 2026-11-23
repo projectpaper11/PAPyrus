@@ -474,12 +474,71 @@ ipcMain.handle('unity:ensureAnalyzers', async (e) => {
   return ensureUnityAnalyzers(app.getPath('userData'), (url) => net.fetch(url), log);
 });
 
+function bundledUnityPackage() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'unity-package', 'com.papyrus.ide')
+    : path.join(__dirname, '../../unity-package/com.papyrus.ide');
+}
+
+/**
+ * The package is copied into the project once (unity:installPackage) and Unity runs that copy, so
+ * fixes on the Unity side (the IDE window jumping over Unity, ...) never reached a project after a
+ * PAPyrus update. Bring an embedded copy in line with the bundled one: changed files rewritten,
+ * removed ones deleted. A package referenced from manifest.json (git, file:) or a linked folder is
+ * left alone. Returns true when something changed.
+ */
+async function updateEmbeddedUnityPackage(project) {
+  const dst = path.join(project, 'Packages', 'com.papyrus.ide');
+  const src = bundledUnityPackage();
+  let st;
+  try { st = await fsp.lstat(dst); } catch { return false; }
+  if (!st.isDirectory() || st.isSymbolicLink() || !fs.existsSync(src)) return false;
+  if (samePath(path.resolve(src), path.resolve(dst))) return false;
+  const list = async (root, dir = '') => {
+    const out = [];
+    for (const d of await fsp.readdir(path.join(root, dir), { withFileTypes: true })) {
+      const rel = path.join(dir, d.name);
+      if (d.isDirectory()) out.push(...await list(root, rel));
+      else if (d.isFile()) out.push(rel);
+    }
+    return out;
+  };
+  const want = await list(src);
+  const have = new Set(await list(dst));
+  let changed = false;
+  for (const rel of want) {
+    const a = await fsp.readFile(path.join(src, rel));
+    let b = null;
+    try { b = await fsp.readFile(path.join(dst, rel)); } catch { /* new file */ }
+    have.delete(rel);
+    if (b && a.equals(b)) continue;
+    await fsp.mkdir(path.dirname(path.join(dst, rel)), { recursive: true });
+    await fsp.writeFile(path.join(dst, rel), a);
+    changed = true;
+  }
+  for (const rel of have) {
+    // only what an older PAPyrus shipped (and its .meta): never anything else in the folder
+    if (!/\.(cs|meta|md|json|asmdef)$/i.test(rel)) continue;
+    await fsp.rm(path.join(dst, rel), { force: true });
+    changed = true;
+  }
+  return changed;
+}
+
+ipcMain.handle('unity:updatePackage', async (e) => {
+  const s = sessionFor(e.sender);
+  if (!s.project) return false;
+  try {
+    return await updateEmbeddedUnityPackage(s.project);
+  } catch {
+    return false;
+  }
+});
+
 ipcMain.handle('unity:installPackage', async (e) => {
   // Copies the bundled Unity package into <project>/Packages/com.papyrus.ide
   const s = sessionFor(e.sender);
-  const src = app.isPackaged
-    ? path.join(process.resourcesPath, 'unity-package', 'com.papyrus.ide')
-    : path.join(__dirname, '../../unity-package/com.papyrus.ide');
+  const src = bundledUnityPackage();
   const dst = path.join(s.project, 'Packages', 'com.papyrus.ide');
   await fsp.rm(dst, { recursive: true, force: true });
   await fsp.cp(src, dst, { recursive: true });
