@@ -37,6 +37,7 @@ export const SCHEMA = [
       { key: 'editor.formatOnSave', label: '저장할 때 서식 적용 (C#)', type: 'bool' },
       { key: 'editor.formatOnType', label: '입력하면서 서식 적용', type: 'bool', desc: '; 나 } 를 입력하면 해당 줄을 정리해요.' },
       { key: 'editor.formatOnPaste', label: '붙여넣을 때 서식 적용 (C#)', type: 'bool', desc: '붙여넣은 코드의 들여쓰기와 중괄호 위치를 정리해요.' },
+      { key: 'editor.addUsingsOnPaste', label: '붙여넣을 때 using 자동 추가 (C#)', type: 'bool', desc: '붙여넣은 코드에 필요한 using을 찾아 넣어요. 같은 이름이 여러 네임스페이스에 있으면 복사해 온 파일의 using을 따르고, 모르면 고르게 해요.' },
       { key: 'editor.allmanBraces', label: '{ 뒤 Enter로 블록 펼치기', type: 'bool', desc: 'if () { 에서 Enter를 누르면 { 를 다음 줄로 내리고 블록을 열어요 (Rider 기본).' },
       { key: 'csharp.namespaceCheck', label: '네임스페이스가 폴더와 다르면 경고 (C#)', type: 'bool', desc: '네임스페이스가 없거나 폴더 위치와 다르면 노란 줄을 그어요. Ctrl+.로 바로 맞출 수 있어요 (Plugins·외부 에셋은 제외).' },
       { key: 'editor.removeUnusedUsings', label: '안 쓰는 using 자동 정리 (C#)', type: 'select', options: [['auto', '바로 (방금 입력한 using은 저장할 때)'], ['onSave', '저장할 때'], ['off', '끄기']], desc: '쓰지 않는 using을 지워요. 코드에 오류(빨간 줄)나 #if로 꺼진 코드가 있으면 지우지 않고, AI 등 외부에서 바뀐 파일은 여기서 편집하기 전까지 건드리지 않아요. 지운 뒤 찾을 수 없는 이름이 생기면 바로 되돌리고, 지운 기록은 출력 패널에 남아요. 찾을 수 없는 네임스페이스의 using까지 지우려면 "using 정리" (Ctrl+Alt+O).' },

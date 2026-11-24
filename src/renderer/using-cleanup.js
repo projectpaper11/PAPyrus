@@ -35,7 +35,7 @@ const codeOf = (d) => String(typeof d.code === 'object' && d.code ? d.code.value
 const unresolvedCount = (diags) => diags.filter((d) => UNRESOLVED_REF_CODES.has(codeOf(d))).length;
 
 /** Lines (1-based) of the using block: before the first namespace / type / attribute. */
-function usingBlock(model) {
+export function usingBlock(model) {
   const lines = [];
   const n = model.getLineCount();
   let inComment = false;

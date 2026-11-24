@@ -63,7 +63,10 @@ export class Editors {
   addGroup(index = this.groups.length) {
     const g = { tabs: [], active: null, flex: 1 };
     g.tabsEl = el('div.ed-tabs');
-    g.host = el('div.ed-host');
+    // .monaco-component: with fixedOverflowWidgets Monaco puts the right-click menu's shadow root next to
+    // the editor, here, outside .monaco-editor. The theme's --vscode-* colors are only declared on
+    // .monaco-editor / .monaco-component, so the menu had no background or border (text only).
+    g.host = el('div.ed-host.monaco-component');
     g.nontext = el('div.ed-nontext');
     g.el = el('div.ed-group', null, g.tabsEl, g.host, g.nontext);
     g.tabsEl.addEventListener('wheel', (e) => {

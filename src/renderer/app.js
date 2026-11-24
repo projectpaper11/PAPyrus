@@ -28,6 +28,7 @@ import { registerUnityMessageCompletion } from './unity-messages.js';
 import { FileErrors } from './file-errors.js';
 import { Refactorings } from './refactorings.js';
 import { UsingCleanup } from './using-cleanup.js';
+import { PasteUsings } from './paste-usings.js';
 import { UnityFeatures } from './unity-features.js';
 import { LocalHistory } from './local-history.js';
 import { NamespaceCheck } from './namespace-check.js';
@@ -85,16 +86,21 @@ class App {
     registerOverrideCompletion(this);
     registerUnityMessageCompletion(this);
     this.refactor = new Refactorings(this);
+    this.pasteUsings = new PasteUsings(this);
     // every split gets the same context menu / Ctrl+click / learned completions (also splits made later)
     this.editors.forEachEditor((ed) => {
       this.codeMemory.attach(ed);
+      this.pasteUsings.attach(ed);
       this.attachRefactorMenu(ed);
       this.attachCtrlClickUsages(ed);
       this.attachLineCopyFlash(ed);
     });
     this.lsp.ensureModelHook = (uris) => this.editors.ensureModels(uris);
     this.usingCleanup = new UsingCleanup(this);
-    this.lsp.onDiagnostics = (model, diags) => this.usingCleanup.onDiagnostics(model, diags);
+    this.lsp.onDiagnostics = (model, diags) => {
+      this.pasteUsings.onDiagnostics(model, diags);
+      this.usingCleanup.onDiagnostics(model, diags);
+    };
     this.unityFeatures = new UnityFeatures(this);
     this.localHistory = new LocalHistory(this);
     this.namespaceCheck = new NamespaceCheck(this);

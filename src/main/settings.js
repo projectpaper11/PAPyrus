@@ -26,6 +26,7 @@ const defaults = {
   'editor.stickyScroll': true,
   'editor.formatOnType': true,
   'editor.formatOnPaste': true, // pasted code is formatted (Roslyn): indentation, braces on their own line
+  'editor.addUsingsOnPaste': true, // pasted C# code gets the using directives it needs (Roslyn's "using X;" fixes)
   'editor.allmanBraces': true, // Enter after `{` moves it to its own line and opens the block, like Rider
   'csharp.namespaceCheck': true, // warn when a script's namespace doesn't match its folder (Rider), Ctrl+. fixes it
   'editor.removeUnusedUsings': 'auto', // 'auto' | 'onSave' | 'off': unused / unresolvable using directives are removed (Rider's optimize usings)
