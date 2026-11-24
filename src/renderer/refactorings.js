@@ -525,21 +525,66 @@ export class Refactorings {
     const newName = name.trim();
     if (!IDENT.test(newName)) { toast({ kind: 'warn', title: '메서드 추출', message: `'${newName}'은(는) 메서드 이름으로 쓸 수 없어요.` }); return; }
     try {
+      const original = c.model.getValue();
       const done = await this.runCodeAction(act);
       // Roslyn names it NewMethod(1, 2...): find it in the edit, then rename it to what was asked
       const texts = JSON.stringify(done.edit || {});
       const gen = (/\b(NewMethod\d*)\b/.exec(texts) || [])[1];
-      if (gen && gen !== newName) {
-        await delay(150);
-        const text = c.model.getValue();
-        const re = new RegExp(`[\\w>\\]?]\\s+(${gen})\\s*\\(`, 'g');
-        const m = re.exec(text);
-        if (m) await this.rename(c.uri, m.index + m[0].indexOf(gen), newName);
-      }
+      if (gen && gen !== newName) await this.renameExtracted(c, original, gen, newName);
+      this.revealExtracted(c, newName);
       toast({ title: '메서드 추출', message: `'${newName}' 메서드를 만들었어요.`, timeout: 2500 });
     } catch (err) {
       this.fail('메서드 추출 실패', err);
     }
+  }
+
+  /**
+   * Rename the method Roslyn just generated. The name used to be changed through the server's
+   * rename right after the edit, and when that answered nothing (the server still busy with the
+   * edit, ContentModified) the method stayed NewMethod. When the file had no such name before,
+   * every occurrence now is the new method's own (its call and its declaration): they are renamed
+   * here in the editor. Otherwise the server's rename, retried a few times.
+   */
+  async renameExtracted(c, original, gen, newName) {
+    const re = new RegExp(`\\b${gen}\\b`, 'g');
+    if (!re.test(original)) {
+      const text = c.model.getValue();
+      const edits = [];
+      re.lastIndex = 0;
+      for (let m; (m = re.exec(text));) {
+        const s = c.model.getPositionAt(m.index);
+        const e = c.model.getPositionAt(m.index + gen.length);
+        edits.push({ range: new monaco.Range(s.lineNumber, s.column, e.lineNumber, e.column), text: newName });
+      }
+      if (edits.length) {
+        c.model.pushEditOperations([], edits, () => null);
+        return;
+      }
+    }
+    const decl = new RegExp(`[\\w>\\]?]\\s+(${gen})\\s*[<(]`, 'g');
+    let lastErr = null;
+    for (let i = 0; i < 4; i++) {
+      await delay(150 + i * 250);
+      const m = decl.exec(c.model.getValue());
+      decl.lastIndex = 0;
+      if (!m) throw new Error(`추출한 메서드 '${gen}'을(를) 찾지 못했어요`);
+      try {
+        await this.rename(c.uri, m.index + m[0].indexOf(gen), newName);
+        return;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr;
+  }
+
+  /** The caret on the new method's name (Rider / VS show the extracted method). */
+  revealExtracted(c, name) {
+    const m = new RegExp(`[\\w>\\]?]\\s+(${name})\\s*[<(]`).exec(c.model.getValue());
+    if (!m) return;
+    const p = c.model.getPositionAt(m.index + m[0].indexOf(name));
+    c.ed.setSelection(new monaco.Range(p.lineNumber, p.column, p.lineNumber, p.column + name.length));
+    c.ed.revealPositionInCenterIfOutsideViewport(p);
   }
 
   // -------------------------------------------------------------------- Change Signature
