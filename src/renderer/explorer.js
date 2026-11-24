@@ -13,28 +13,20 @@ const TYPE_KINDS = [5, 10, 11, 23]; // LSP SymbolKind: class, enum, interface, s
 const TEMPLATES = {
   mono: (n, ns) => wrapNs(ns, `public class ${n} : MonoBehaviour
 {
-    private void Start()
-    {
-
-    }
-
-    private void Update()
-    {
-
-    }
+    $0
 }`, ['UnityEngine']),
   so: (n, ns) => wrapNs(ns, `[CreateAssetMenu(fileName = "${n}", menuName = "Scriptable Objects/${n}")]
 public class ${n} : ScriptableObject
 {
-
+    $0
 }`, ['UnityEngine']),
   cls: (n, ns) => wrapNs(ns, `public class ${n}
 {
-
+    $0
 }`, []),
   iface: (n, ns) => wrapNs(ns, `public interface ${n}
 {
-
+    $0
 }`, []),
   editor: (n, ns) => wrapNs(ns, `public class ${n} : EditorWindow
 {
@@ -43,7 +35,7 @@ public class ${n} : ScriptableObject
 
     private void OnGUI()
     {
-
+        $0
     }
 }`, ['UnityEditor', 'UnityEngine']),
 };
@@ -999,8 +991,8 @@ export class Explorer {
     }
     contextMenu(x, y, [
       ...unityItems,
-      { label: '새 폴더…', icon: 'new-folder', action: () => this.newFolder(dir) },
       { label: '새 C# 스크립트…', icon: 'symbol-class', key: this.app.kb('papyrus.newScript'), action: () => this.newScript(dir) },
+      { label: '새 폴더…', icon: 'new-folder', action: () => this.newFolder(dir) },
       { label: '새 파일…', icon: 'new-file', action: () => this.newFile(dir) },
       '-',
       { label: '잘라내기', icon: 'clippy', key: 'Ctrl+X', disabled: samePath(path, this.root), action: () => this.setClipboard(path, true) },
@@ -1026,8 +1018,8 @@ export class Explorer {
     const r = this.el.querySelector('.tree-row.selected');
     const b = r ? r.getBoundingClientRect() : { left: 100, bottom: 100 };
     contextMenu(b.left + 30, b.bottom, [
-      { label: '새 폴더…', icon: 'new-folder', action: () => this.newFolder(dir) },
       { label: '새 C# 스크립트…', icon: 'symbol-class', key: this.app.kb('papyrus.newScript'), action: () => this.newScript(dir) },
+      { label: '새 폴더…', icon: 'new-folder', action: () => this.newFolder(dir) },
       { label: '새 파일…', icon: 'new-file', action: () => this.newFile(dir) },
     ]);
   }
@@ -1087,7 +1079,10 @@ export class Explorer {
       return;
     }
     const ns = await this.guessNamespace(dir);
-    const text = TEMPLATES[r.choice](name, ns).replace(/\n/g, '\r\n');
+    // `$0`: where the caret goes. Its indentation stays in the file, so typing starts in place.
+    const lines = TEMPLATES[r.choice](name, ns).split('\n');
+    const caretLine = lines.findIndex((l) => l.includes('$0'));
+    const text = lines.map((l) => l.replace('$0', '')).join('\r\n');
     const p = joinPath(dir, name + '.cs');
     try {
       await ofs.createFile(p, text);
@@ -1098,11 +1093,11 @@ export class Explorer {
     this.expanded.add(dir);
     await this.refresh([p]);
     const tab = await this.app.editors.open(p);
-    if (tab && tab.model) {
-      // put the caret inside Start() / the class body
-      const lines = tab.model.getLinesContent();
-      const i = lines.findIndex((l, k) => k > 0 && /^\s+$/.test(l));
-      if (i >= 0) this.app.editors.editor.setPosition({ lineNumber: i + 1, column: lines[i].length + 1 });
+    if (tab && tab.model && caretLine >= 0) {
+      // the caret in the class body (OnGUI() for an EditorWindow)
+      const ln = caretLine + 1;
+      this.app.editors.editor.setPosition({ lineNumber: ln, column: tab.model.getLineMaxColumn(ln) });
+      this.app.editors.editor.revealPositionInCenterIfOutsideViewport({ lineNumber: ln, column: 1 });
     }
     this.app.unityRefreshSoon();
   }
