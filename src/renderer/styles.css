@@ -235,6 +235,7 @@ body.pdrag.pdrag-no, body.pdrag.pdrag-no * { cursor: no-drop !important; }
 .tree-row:hover { background: var(--bg-hover-soft); }
 .tree-row.selected { background: var(--sel-inactive); }
 .tree:focus-within .tree-row.selected, .tree:focus .tree-row.selected { background: var(--accent-soft); }
+.tree-row.focused { box-shadow: inset 0 0 0 1px var(--accent); } /* the row the keyboard / menu acts from, in a multi-selection */
 .tree-row .twisty { width: 16px; flex: none; display: grid; place-items: center; color: var(--fg-dim); }
 .tree-row .twisty .codicon { font-size: 14px; }
 .tree-row .label { overflow: hidden; text-overflow: ellipsis; }

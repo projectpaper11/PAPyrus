@@ -54,7 +54,9 @@ export class Explorer {
     this.root = null;
     this.expanded = new Set();
     this.children = new Map(); // dir -> entries
-    this.selected = null;
+    this.selected = null; // the focused row (keyboard, context menu); always part of the selection
+    this.selection = new Map(); // lower-case path -> path: every selected row (Ctrl / Shift + click)
+    this.anchor = null; // where a Shift range starts
     this.rows = [];
     this.el = el('div.tree', { tabindex: 0 });
     this.el.addEventListener('keydown', (e) => this.onKey(e));
@@ -99,7 +101,7 @@ export class Explorer {
   // namespace offer, like Cut/Paste). While dragging, the tree scrolls by itself near its top or
   // bottom edge, the mouse wheel scrolls it, and a closed folder held over for a moment opens.
   setupDragMove() {
-    this.drag = null; // { path, y, raf, hoverDir, hoverSince, target }
+    this.drag = null; // { paths, y, raf, hoverDir, hoverSince, target }
     const scroller = () => this.view.parentElement || this.view;
     const targetDir = (e) => {
       const row = e.target.closest && e.target.closest('.tree-row');
@@ -108,13 +110,15 @@ export class Explorer {
       if (!r) return null;
       return r.dir ? r.path : dirname(r.path);
     };
-    const canDrop = (from, dir) => {
+    const canDrop1 = (from, dir) => {
       if (!from || !dir) return false;
       if (samePath(dirname(from), dir) || samePath(from, dir)) return false;
       const f = from.toLowerCase().replace(/[\\/]+$/, '');
       const d = dir.toLowerCase();
       return !(d.startsWith(f + '\\') || d.startsWith(f + '/')); // not into itself
     };
+    // several rows dragged together: the drop works when at least one of them can go there
+    const canDrop = (paths, dir) => (paths || []).some((p) => canDrop1(p, dir));
     const mark = (dir) => {
       if (this.drag && this.drag.target === dir) return;
       this.el.querySelectorAll('.tree-row.drop-target').forEach((x) => x.classList.remove('drop-target'));
@@ -139,9 +143,9 @@ export class Explorer {
       if (v) s.scrollTop += v;
       d.raf = requestAnimationFrame(tick);
     };
-    this.dragStart = (path) => {
+    this.dragStart = (paths) => {
       this.dragEnd();
-      this.drag = { path, y: null, raf: 0, hoverDir: null, hoverSince: 0, target: null, lastOver: Date.now() };
+      this.drag = { paths, y: null, raf: 0, hoverDir: null, hoverSince: 0, target: null, lastOver: Date.now() };
       this.drag.raf = requestAnimationFrame(tick);
     };
     this.dragEnd = () => {
@@ -158,7 +162,7 @@ export class Explorer {
       d.lastOver = Date.now();
       const dir = targetDir(e);
       this.el.classList.remove('drop-root');
-      if (!canDrop(d.path, dir)) {
+      if (!canDrop(d.paths, dir)) {
         mark(null);
         e.dataTransfer.dropEffect = 'none';
         e.preventDefault();
@@ -194,9 +198,9 @@ export class Explorer {
       e.preventDefault();
       e.stopPropagation();
       const dir = targetDir(e);
-      const from = d.path;
+      const from = d.paths;
       this.dragEnd();
-      if (canDrop(from, dir)) await this.moveTo(from, dir);
+      if (canDrop(from, dir)) await this.moveMany(from.filter((p) => canDrop1(p, dir)), dir);
     });
     this.setupPointerDrag();
   }
@@ -239,11 +243,14 @@ export class Explorer {
         dt.setData('text/plain', r.path);
       }
       dt.setData(MOVE_MIME, r.path);
-      const ghost = el('div.drag-ghost', null, fileIcon(r.name, r.dir), el('span', null, r.name));
+      // a row of a multi-selection drags the whole selection (for moves; the inspector / hierarchy
+      // still get just this row)
+      const paths = this.isSelected(r.path) && this.selection.size > 1 ? this.selectedPaths(r.path) : [r.path];
+      const ghost = el('div.drag-ghost', null, fileIcon(r.name, r.dir), el('span', null, paths.length > 1 ? `${r.name} 외 ${paths.length - 1}개` : r.name));
       document.body.append(ghost);
       document.body.classList.add('pdrag');
       pd = { dt, ghost, target: null, x, y, accepted: false, timer: 0 };
-      this.dragStart(r.path);
+      this.dragStart(paths);
       // like a native drag: dragover keeps coming while the mouse rests (edge scroll, folder opening)
       pd.timer = setInterval(over, 60);
       over();
@@ -519,10 +526,10 @@ export class Explorer {
 
   row(r) {
     const open = r.dir && this.expanded.has(r.path);
-    const isSel = this.selected && samePath(this.selected, r.path);
+    const isSel = this.isSelected(r.path);
     const inPin = this.viewRoot && !samePath(this.viewRoot, this.root);
     const dim = !inPin && r.depth === 1 && !['Assets', 'Packages'].includes(r.name) && r.dir;
-    const cut = this.clipboard && this.clipboard.cut && samePath(this.clipboard.path, r.path);
+    const cut = this.clipboard && this.clipboard.cut && this.clipboard.paths.some((p) => samePath(p, r.path));
     const errors = this.errorCount(r.path);
     const row = el('div.tree-row' + (isSel ? '.selected' : '') + (dim ? '.dim' : '') + (cut ? '.cut' : '') + (errors ? '.has-error' : ''), {
       style: { paddingLeft: 6 + r.depth * 16 + 'px' },
@@ -535,10 +542,17 @@ export class Explorer {
       onmousedown: (e) => {
         this.armDrag(e, r);
         if (e.button !== 0) return;
-        this.select(r.path);
+        if (e.ctrlKey || e.metaKey) { this.toggleSelect(r.path); return; }
+        if (e.shiftKey) { this.selectRange(r.path); return; }
+        // pressing on a row of a multi-selection keeps it (the rows can be dragged together);
+        // the click that follows without a drag selects just this row
+        if (this.isSelected(r.path) && this.selection.size > 1) this.selected = r.path;
+        else this.select(r.path);
         if (r.dir && e.detail === 1 && e.target.closest('.twisty')) this.toggle(r.path);
       },
       onclick: (e) => {
+        if (e.ctrlKey || e.metaKey || e.shiftKey) return; // selecting, not opening
+        if (this.selection.size > 1 && e.detail === 1) this.select(r.path);
         if (r.dir || e.detail !== 1) return;
         // scenes / prefabs / ScriptableObjects: show them decoded in the inspector, not as YAML text
         if (isInspectable(r.path)) this.app.inspector.preview(r.path);
@@ -552,7 +566,9 @@ export class Explorer {
       oncontextmenu: (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this.select(r.path);
+        // on a selected row the menu acts on the whole selection
+        if (this.isSelected(r.path) && this.selection.size > 1) this.selected = r.path;
+        else this.select(r.path);
         this.menu(r.path, r.dir, e.clientX, e.clientY);
       },
     },
@@ -584,11 +600,63 @@ export class Explorer {
     return !!(r && r.dir);
   }
 
+  /** One row selected (a plain click, a reveal, the result of an operation). */
   select(path) {
     this.selected = path;
-    this.el.querySelectorAll('.tree-row.selected').forEach((x) => x.classList.remove('selected'));
-    const row = [...this.el.children].find((x) => samePath(x.dataset.path, path));
-    if (row) row.classList.add('selected');
+    this.anchor = path;
+    this.selection = new Map(path ? [[path.toLowerCase(), path]] : []);
+    this.paintSelection();
+  }
+
+  isSelected(path) {
+    return !!path && this.selection.has(path.toLowerCase());
+  }
+
+  /** Ctrl+click: add or take out one row. */
+  toggleSelect(path) {
+    const k = path.toLowerCase();
+    if (this.selection.has(k) && this.selection.size > 1) {
+      this.selection.delete(k);
+      if (samePath(this.selected, path)) this.selected = [...this.selection.values()].pop();
+    } else {
+      this.selection.set(k, path);
+      this.selected = path;
+    }
+    this.anchor = path;
+    this.paintSelection();
+  }
+
+  /** Shift+click / Shift+arrow: every row from the anchor to this one (Ctrl keeps the rest). */
+  selectRange(path, add = false) {
+    const from = this.rows.findIndex((r) => samePath(r.path, this.anchor || this.selected || path));
+    const to = this.rows.findIndex((r) => samePath(r.path, path));
+    if (to < 0) return;
+    if (!add) this.selection = new Map();
+    const [a, b] = from < 0 ? [to, to] : [Math.min(from, to), Math.max(from, to)];
+    for (const r of this.rows.slice(a, b + 1)) if (!r.isRoot || a === b) this.selection.set(r.path.toLowerCase(), r.path);
+    this.selected = path;
+    this.paintSelection();
+  }
+
+  paintSelection() {
+    for (const row of this.el.children) {
+      row.classList.toggle('selected', this.isSelected(row.dataset.path));
+      row.classList.toggle('focused', !!this.selected && samePath(row.dataset.path, this.selected) && this.selection.size > 1);
+    }
+  }
+
+  /**
+   * What an operation acts on: the selected rows in tree order when the focused row is one of them
+   * (else just that row), without the project root and without anything inside another selected folder.
+   */
+  selectedPaths(path = this.selected) {
+    if (!path) return [];
+    const list = this.isSelected(path) && this.selection.size > 1
+      ? this.rows.filter((r) => this.isSelected(r.path)).map((r) => r.path)
+      : [path];
+    const lower = list.map((p) => p.toLowerCase().replace(/[\\/]+$/, ''));
+    return list.filter((p, i) => !samePath(p, this.root)
+      && !lower.some((q, j) => j !== i && (lower[i].startsWith(q + '\\') || lower[i].startsWith(q + '/'))));
   }
 
   async toggle(path, force) {
@@ -653,7 +721,8 @@ export class Explorer {
     const go = (i) => {
       const r = this.rows[Math.max(0, Math.min(this.rows.length - 1, i))];
       if (!r) return;
-      this.select(r.path);
+      if (e.shiftKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) this.selectRange(r.path);
+      else this.select(r.path);
       const row = [...this.el.children].find((x) => samePath(x.dataset.path, r.path));
       if (row) row.scrollIntoView({ block: 'nearest' });
     };
@@ -683,7 +752,11 @@ export class Explorer {
         if (cur && (e.key === 'F2' || e.shiftKey)) this.rename(cur.path);
         break;
       case 'Delete':
-        if (cur && !cur.isRoot) this.remove(cur.path);
+        if (cur) this.removeSelected();
+        break;
+      case 'Escape':
+        if (this.selection.size > 1 && cur) this.select(cur.path);
+        else return;
         break;
       case 'Insert':
         if (e.altKey && cur) this.newMenu(cur.dir ? cur.path : dirname(cur.path));
@@ -691,10 +764,12 @@ export class Explorer {
       default: {
         // Ctrl+C / Ctrl+X / Ctrl+V like Rider's Solution Explorer; Ctrl+D = Rider's Copy... (F5 is Play here)
         const k = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey ? e.key.toLowerCase() : '';
+        const paths = this.selectedPaths();
         if (k === 'z') this.undo();
-        else if (k === 'd' && cur && !cur.isRoot) this.copyTo(cur.path, dirname(cur.path));
-        else if (k === 'c' && cur && !cur.isRoot) this.setClipboard(cur.path, false);
-        else if (k === 'x' && cur && !cur.isRoot) this.setClipboard(cur.path, true);
+        else if (k === 'a') { this.selection = new Map(this.rows.filter((r) => !r.isRoot).map((r) => [r.path.toLowerCase(), r.path])); this.paintSelection(); }
+        else if (k === 'd' && paths.length) this.duplicate(paths);
+        else if (k === 'c' && paths.length) this.setClipboard(paths, false);
+        else if (k === 'x' && paths.length) this.setClipboard(paths, true);
         else if (k === 'v' && cur) this.paste(cur.dir ? cur.path : dirname(cur.path));
         else return;
       }
@@ -727,58 +802,118 @@ export class Explorer {
     if (later && !later.length && this.app.settings['history.enabled'] !== false) {
       await this.app.localHistory.revertProject(e.T - 1, { quiet: true });
     }
-    if (!(await ofs.exists(e.from))) {
+    // several items moved at once go back together
+    const moves = e.group || [{ from: e.from, to: e.to }];
+    const back = [];
+    const stuck = [];
+    for (const m of [...moves].reverse()) {
+      if (await ofs.exists(m.from)) { back.push(m); continue; } // the history revert put it back
       // something else changed since: only the file goes back
-      if (!(await ofs.exists(e.to)) || (await ofs.exists(e.from))) {
-        toast({ kind: 'warn', title: '되돌릴 수 없어요', message: `${basename(e.to)}이(가) 그 뒤로 다시 옮겨졌거나 같은 이름이 있어요.`, timeout: 3500 });
-        return;
-      }
+      if (!(await ofs.exists(m.to))) { stuck.push(basename(m.to)); continue; }
       try {
-        const tab = this.app.editors.findTab(e.to);
-        if (tab && tab.dirty) await this.app.editors.save(tab);
-        await ofs.rename(e.to, e.from);
-        if (tab) {
-          await this.app.editors.closeTab(tab, { force: true, noHistory: true });
-          await this.app.editors.open(e.from);
-        }
-      } catch (err) {
-        toast({ kind: 'error', title: '되돌릴 수 없어요', message: String(err.message || err) });
-        return;
+        await this.moveOne(m.to, m.from);
+        back.push(m);
+      } catch {
+        stuck.push(basename(m.to));
       }
     }
-    this.expanded.add(dirname(e.from));
-    await this.refresh([e.from, e.to]);
-    this.select(e.from);
+    if (stuck.length) toast({ kind: 'warn', title: '되돌리지 못한 항목', message: `${stuck.join(', ')} — 그 뒤로 다시 옮겨졌거나 같은 이름이 있어요.`, timeout: 4000 });
+    if (!back.length) return;
+    for (const m of back) this.expanded.add(dirname(m.from));
+    await this.refresh(back.flatMap((m) => [m.from, m.to]));
+    this.selection = new Map(back.map((m) => [m.from.toLowerCase(), m.from]));
+    this.selected = back[0].from;
+    this.anchor = this.selected;
+    this.paintSelection();
     this.app.unityRefreshSoon();
-    toast({ title: '되돌렸어요', message: `${e.what}: ${basename(e.to)} → ${relPath(this.app.project, e.from)}`, timeout: 2500 });
+    toast({
+      title: '되돌렸어요',
+      message: back.length === 1 ? `${e.what}: ${basename(back[0].to)} → ${relPath(this.app.project, back[0].from)}` : `${e.what}: ${back.length}개 항목을 원래 자리로`,
+      timeout: 2500,
+    });
   }
 
   // ------------------------------------------------------------------ copy / cut / paste
-  setClipboard(path, cut) {
-    this.clipboard = { path, cut };
-    this.el.querySelectorAll('.tree-row.cut').forEach((r) => r.classList.remove('cut'));
-    if (cut) {
-      const row = [...this.el.children].find((x) => samePath(x.dataset.path, path));
-      if (row) row.classList.add('cut');
-    }
-    navigator.clipboard.writeText(path).catch(() => {});
-    toast({ title: cut ? '잘라냈어요' : '복사했어요', message: `${basename(path)} · 붙여넣을 폴더에서 Ctrl+V`, timeout: 1800 });
+  setClipboard(pathOrPaths, cut) {
+    const paths = [].concat(pathOrPaths);
+    this.clipboard = { paths, cut };
+    for (const row of this.el.children) row.classList.toggle('cut', cut && paths.some((p) => samePath(p, row.dataset.path)));
+    navigator.clipboard.writeText(paths.join('\n')).catch(() => {});
+    const what = paths.length === 1 ? basename(paths[0]) : `${paths.length}개 항목`;
+    toast({ title: cut ? '잘라냈어요' : '복사했어요', message: `${what} · 붙여넣을 폴더에서 Ctrl+V`, timeout: 1800 });
   }
 
   async paste(dir) {
     const c = this.clipboard;
     if (!c) return;
-    if (!(await ofs.exists(c.path))) {
+    const paths = [];
+    for (const p of c.paths) if (await ofs.exists(p)) paths.push(p);
+    if (!paths.length) {
       this.clipboard = null;
-      toast({ kind: 'warn', title: '붙여넣을 파일이 없어졌어요', message: basename(c.path), timeout: 3000 });
+      toast({ kind: 'warn', title: '붙여넣을 파일이 없어졌어요', message: c.paths.map(basename).join(', '), timeout: 3000 });
       return;
     }
     if (c.cut) {
-      await this.moveTo(c.path, dir);
+      await this.moveMany(paths, dir);
       this.clipboard = null;
+    } else if (paths.length === 1) {
+      await this.copyTo(paths[0], dir);
     } else {
-      await this.copyTo(c.path, dir);
+      await this.copyMany(paths, dir);
     }
+  }
+
+  /** Ctrl+D: one item through the Copy dialog, several next to themselves with free names. */
+  async duplicate(paths) {
+    if (paths.length === 1) return this.copyTo(paths[0], dirname(paths[0]));
+    const made = [];
+    for (const p of paths) made.push(...await this.copyMany([p], dirname(p), { quiet: true }));
+    if (made.length) {
+      this.selection = new Map(made.map((p) => [p.toLowerCase(), p]));
+      this.selected = made[made.length - 1];
+      this.paintSelection();
+      toast({ title: '복제했어요', message: `${made.length}개 항목`, timeout: 2000 });
+    }
+  }
+
+  /**
+   * Several items copied into dir without the dialog: a taken name gets the next free one
+   * ("Name1.cs"), and a renamed script's class follows its new name (the Copy dialog's default).
+   * Returns the copies made.
+   */
+  async copyMany(paths, dir, { quiet = false } = {}) {
+    const made = [];
+    const failed = [];
+    for (const path of paths) {
+      const old = basename(path);
+      const isDir = !!((await ofs.stat(path)) || {}).dir;
+      if (isDir && (dir.toLowerCase() + '\\').startsWith(path.toLowerCase().replace(/[\\/]+$/, '') + '\\')) { failed.push(`${old} (자기 안으로는 복사할 수 없어요)`); continue; }
+      const name = (await ofs.exists(joinPath(dir, old))) ? await this.freeName(dir, old, isDir) : old;
+      const to = joinPath(dir, name);
+      try {
+        if (!isDir && /\.cs$/i.test(old)) {
+          const renameClass = this.app.settings[COPY_CLASS_KEY] !== false && name !== old;
+          await this.copyScript(path, to, { renameClass, oldClass: old.slice(0, -3), newClass: name.slice(0, -3) });
+        } else {
+          await ofs.copy(path, to);
+          if (isDir) await this.fixFolderCopy(path, to);
+        }
+        made.push(to);
+      } catch (err) {
+        failed.push(`${old}: ${String(err.message || err)}`);
+      }
+    }
+    this.expanded.add(dir);
+    await this.refresh(made.length ? made : [dir]);
+    if (made.length && !quiet) {
+      this.selection = new Map(made.map((p) => [p.toLowerCase(), p]));
+      this.selected = made[made.length - 1];
+      this.paintSelection();
+      toast({ title: '복사했어요', message: `${made.length}개 항목 → ${relPath(this.app.project, dir) || '.'}`, timeout: 2500 });
+    }
+    if (failed.length) toast({ kind: 'error', title: '복사하지 못한 항목', message: failed.join('\n'), timeout: 6000 });
+    if (made.length) this.app.unityRefreshSoon();
+    return made;
   }
 
   /** "Name.cs" -> "Name1.cs", "Name2.cs"... the first name not taken in dir. */
@@ -933,44 +1068,118 @@ export class Explorer {
   }
 
   /** Cut + paste: move the file with its .meta (Unity keeps the GUID, so references survive). */
-  async moveTo(path, dir, { offerNamespace = true } = {}) {
-    if (samePath(dirname(path), dir)) return;
-    let name = basename(path);
-    if (await ofs.exists(joinPath(dir, name))) {
-      const v = await prompt({ title: '이동', sub: `'${name}'이(가) 이미 있어요. 새 이름:`, value: await this.freeName(dir, name, this.isDir(path)) });
-      if (!v || !v.trim()) return;
-      name = v.trim();
+  async moveTo(path, dir, opts) {
+    return this.moveMany([path], dir, opts);
+  }
+
+  /** One file / folder renamed into dir (its tab follows). Returns the new path, or throws. */
+  async moveOne(path, to) {
+    const tab = this.app.editors.findTab(path);
+    if (tab && tab.dirty) await this.app.editors.save(tab);
+    await ofs.rename(path, to);
+    if (tab) {
+      await this.app.editors.closeTab(tab, { force: true, noHistory: true });
+      await this.app.editors.open(to);
     }
-    const to = joinPath(dir, name);
-    const T = Date.now();
-    await this.app.localHistory.label(`이동: ${basename(path)} → ${relPath(this.app.project, dir) || '/'}`);
-    try {
-      const tab = this.app.editors.findTab(path);
-      if (tab && tab.dirty) await this.app.editors.save(tab);
-      await ofs.rename(path, to);
-      if (tab) {
-        await this.app.editors.closeTab(tab, { force: true, noHistory: true });
-        await this.app.editors.open(to);
+    return to;
+  }
+
+  /**
+   * Cut + paste / drag & drop of one or several items: each moves with its .meta (Unity keeps the
+   * GUID, so references survive). One local history label and one undo entry for all of them, and
+   * one namespace offer for every script that moved.
+   */
+  async moveMany(paths, dir, { offerNamespace = true } = {}) {
+    const lower = (p) => p.toLowerCase().replace(/[\\/]+$/, '');
+    const todo = paths.filter((p) => !samePath(dirname(p), dir) && !samePath(p, dir)
+      && !(lower(dir) + '\\').startsWith(lower(p) + '\\'));
+    if (!todo.length) return;
+    const single = todo.length === 1;
+    const plan = [];
+    for (const path of todo) {
+      let name = basename(path);
+      if (await ofs.exists(joinPath(dir, name)) || plan.some((x) => samePath(x.to, joinPath(dir, name)))) {
+        const free = await this.freeName(dir, name, this.isDir(path));
+        if (single) {
+          const v = await prompt({ title: '이동', sub: `'${name}'이(가) 이미 있어요. 새 이름:`, value: free });
+          if (!v || !v.trim()) return;
+          name = v.trim();
+        } else name = free;
       }
-    } catch (err) {
-      toast({ kind: 'error', title: '이동할 수 없어요', message: String(err.message || err) });
-      return;
+      plan.push({ from: path, to: joinPath(dir, name) });
     }
+    const T = Date.now();
+    const where = relPath(this.app.project, dir) || '/';
+    await this.app.localHistory.label(single ? `이동: ${basename(plan[0].from)} → ${where}` : `이동: ${plan.length}개 항목 → ${where}`);
+    const done = [];
+    const failed = [];
+    for (const m of plan) {
+      try {
+        await this.moveOne(m.from, m.to);
+        done.push(m);
+      } catch (err) {
+        failed.push(`${basename(m.from)}: ${String(err.message || err)}`);
+      }
+    }
+    if (failed.length) toast({ kind: 'error', title: single ? '이동할 수 없어요' : '이동하지 못한 항목', message: failed.join('\n'), timeout: 6000 });
+    if (!done.length) return;
     this.expanded.add(dir);
-    await this.refresh([path, to]);
-    this.select(to);
+    await this.refresh(done.flatMap((m) => [m.from, m.to]));
+    this.selection = new Map(done.map((m) => [m.to.toLowerCase(), m.to]));
+    this.selected = done[done.length - 1].to;
+    this.anchor = this.selected;
+    this.paintSelection();
     this.app.unityRefreshSoon();
-    const undo = this.pushUndo({ what: '이동', from: path, to, T });
+    const undo = this.pushUndo(done.length === 1 ? { what: '이동', from: done[0].from, to: done[0].to, T } : { what: '이동', group: done, T });
+    if (!single && done.length > 1) toast({ title: '옮겼어요', message: `${done.length}개 항목 → ${where}`, timeout: 2500 });
     if (offerNamespace) {
-      const isDir = !!((await ofs.stat(to)) || {}).dir;
-      const scripts = isDir ? (await ofs.listAllFiles(to)).filter((f) => /\.cs$/i.test(f)) : /\.cs$/i.test(to) ? [to] : [];
-      // where each script was before the move
-      const fromDirOf = (f) => dirname(isDir ? path + f.slice(to.length) : path);
-      if (scripts.length) this.offerNamespaceFix(scripts.slice(0, 500), fromDirOf, undo).catch(() => {});
+      const scripts = [];
+      const origin = new Map(); // script now -> its folder before the move
+      for (const m of done) {
+        const isDir = !!((await ofs.stat(m.to)) || {}).dir;
+        const list = isDir ? (await ofs.listAllFiles(m.to)).filter((f) => /\.cs$/i.test(f)) : /\.cs$/i.test(m.to) ? [m.to] : [];
+        for (const f of list) {
+          scripts.push(f);
+          origin.set(f.toLowerCase(), dirname(isDir ? m.from + f.slice(m.to.length) : m.from));
+        }
+      }
+      if (scripts.length) this.offerNamespaceFix(scripts.slice(0, 500), (f) => origin.get(f.toLowerCase()), undo).catch(() => {});
     }
   }
 
+  /** The right-click menu on a multi-selection: what works on all of the selected items. */
+  multiMenu(paths, path, isDir, x, y) {
+    const dir = isDir ? path : dirname(path);
+    const scripts = paths.filter((p) => /\.cs$/i.test(p) || this.isDir(p));
+    contextMenu(x, y, [
+      { label: `${paths.length}개 선택됨`, icon: 'checklist', disabled: true },
+      '-',
+      { label: '잘라내기', icon: 'clippy', key: 'Ctrl+X', action: () => this.setClipboard(paths, true) },
+      { label: '복사', icon: 'copy', key: 'Ctrl+C', action: () => this.setClipboard(paths, false) },
+      { label: this.pasteLabel(), icon: 'clippy', key: 'Ctrl+V', disabled: !this.clipboard, action: () => this.paste(dir) },
+      { label: '복제', icon: 'files', key: 'Ctrl+D', action: () => this.duplicate(paths) },
+      '-',
+      { label: `${paths.length}개 삭제`, icon: 'trash', key: 'Delete', action: () => this.removeMany(paths) },
+      ...(scripts.length ? [{ label: '네임스페이스를 폴더에 맞추기…', icon: 'symbol-namespace', action: async () => {
+        const files = [];
+        for (const p of scripts) files.push(...(this.isDir(p) ? (await ofs.listAllFiles(p)).filter((f) => /\.cs$/i.test(f)) : [p]));
+        await this.app.refactor.adjustNamespaces(files);
+      } }] : []),
+      '-',
+      { label: '경로 복사', icon: 'link', action: () => navigator.clipboard.writeText(paths.join('\n')) },
+      { label: '선택 해제', icon: 'close', key: 'Esc', action: () => this.select(path) },
+    ]);
+  }
+
+  pasteLabel() {
+    const c = this.clipboard;
+    if (!c) return '붙여넣기';
+    return `붙여넣기 (${c.paths.length === 1 ? basename(c.paths[0]) : `${c.paths.length}개 항목`})`;
+  }
+
   menu(path, isDir, x, y) {
+    const multi = this.isSelected(path) && this.selection.size > 1 ? this.selectedPaths(path) : [];
+    if (multi.length > 1) return this.multiMenu(multi, path, isDir, x, y);
     const dir = isDir ? path : dirname(path);
     const ext = isDir ? '' : extname(path);
     const ins = this.app.inspector;
@@ -997,7 +1206,7 @@ export class Explorer {
       '-',
       { label: '잘라내기', icon: 'clippy', key: 'Ctrl+X', disabled: samePath(path, this.root), action: () => this.setClipboard(path, true) },
       { label: '복사', icon: 'copy', key: 'Ctrl+C', disabled: samePath(path, this.root), action: () => this.setClipboard(path, false) },
-      { label: this.clipboard ? `붙여넣기 (${basename(this.clipboard.path)})` : '붙여넣기', icon: 'clippy', key: 'Ctrl+V', disabled: !this.clipboard, action: () => this.paste(dir) },
+      { label: this.pasteLabel(), icon: 'clippy', key: 'Ctrl+V', disabled: !this.clipboard, action: () => this.paste(dir) },
       { label: '복제…', icon: 'files', key: 'Ctrl+D', disabled: samePath(path, this.root), action: () => this.copyTo(path, dirname(path)) },
       '-',
       { label: '이름 바꾸기…', icon: 'edit', key: 'F2', disabled: samePath(path, this.root), action: () => this.rename(path) },
@@ -1207,6 +1416,68 @@ export class Explorer {
     // The file now holds the new class name, so the usages must reach disk too or Unity compiles
     // a half-renamed project. Save only what this rename touched; leave the user's own edits.
     for (const t of E.dirtyTabs) if (!wasDirty.has(t)) await E.save(t);
+  }
+
+  /** Delete key / menu: the selection, through the one-item dialog (safe delete) or the list dialog. */
+  async removeSelected(path = this.selected) {
+    const paths = this.selectedPaths(path);
+    if (paths.length === 1) return this.remove(paths[0]);
+    if (paths.length) return this.removeMany(paths);
+  }
+
+  async removeMany(paths) {
+    if (!(await this.confirmDeleteMany(paths))) return;
+    const failed = [];
+    for (const path of paths) {
+      const tabs = this.app.editors.tabs.filter((t) => !t.special && t.path && (samePath(t.path, path) || t.path.toLowerCase().startsWith(path.toLowerCase().replace(/[\\/]+$/, '') + '\\')));
+      for (const tab of tabs) await this.app.editors.closeTab(tab, { force: true });
+      try {
+        await ofs.trash(path);
+      } catch (err) {
+        failed.push(`${basename(path)}: ${String(err.message || err)}`);
+      }
+    }
+    if (failed.length) toast({ kind: 'error', title: '삭제하지 못한 항목', message: failed.join('\n'), timeout: 6000 });
+    await this.refresh(paths);
+    this.select(null);
+    this.app.unityRefreshSoon();
+  }
+
+  /** The delete dialog for several items: what goes, with .meta files, to the recycle bin. */
+  confirmDeleteMany(paths) {
+    return new Promise((resolve) => {
+      const prevFocus = document.activeElement;
+      const close = (v) => {
+        back.remove();
+        if (prevFocus && prevFocus.isConnected && prevFocus.focus) prevFocus.focus();
+        resolve(v);
+      };
+      const dirs = paths.filter((p) => this.isDir(p)).length;
+      const files = paths.length - dirs;
+      const counts = [files ? `파일 ${files}개` : '', dirs ? `폴더 ${dirs}개` : ''].filter(Boolean).join(', ');
+      const scripts = paths.filter((p) => /\.cs$/i.test(p)).length;
+      const cancel = el('button.btn', { onclick: () => close(false) }, '취소');
+      const ok = el('button.btn.primary', { onclick: () => close(true) }, `${paths.length}개 삭제`);
+      const back = el('div.dialog-back.cd-back', {
+        tabindex: '-1',
+        onmousedown: (e) => { if (e.target === back) close(false); },
+        onkeydown: (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); } },
+      }, el('div.cd-dialog', { role: 'dialog', 'aria-label': '삭제' },
+        el('div.cd-head', null,
+          el('span.cd-title', null, '삭제'),
+          el('button.cd-x', { title: '닫기 (Esc)', onclick: () => close(false) }, icon('close'))),
+        el('div.cd-body', null,
+          el('div.cd-main', null, icon('trash'),
+            el('div.cd-text', null, el('div.cd-msg', null, `선택한 ${paths.length}개 항목(${counts})을 삭제할까요?`))),
+          el('div.cd-list', null, paths.slice(0, 200).map((p) => el('div.cd-use', { title: relPath(this.app.project, p) },
+            fileIcon(basename(p), this.isDir(p)), el('span.cd-file', null, basename(p)),
+            el('span.cd-code', null, relPath(this.app.project, dirname(p)))))),
+          scripts ? el('div.cd-note', null, icon('warning'), el('span', null, '여러 개를 지울 때는 스크립트 사용처를 검사하지 않아요. 사용처가 궁금하면 하나씩 지우세요.')) : null,
+          el('div.cd-note', null, icon('info'), el('span', null, '.meta 파일도 함께 휴지통으로 옮겨져요. 휴지통에서 되돌릴 수 있어요.'))),
+        el('div.cd-foot', null, cancel, ok)));
+      document.getElementById('overlay-root').append(back);
+      ok.focus();
+    });
   }
 
   async remove(path) {

@@ -369,7 +369,10 @@ export class Editors {
       hideCursorInOverviewRuler: true,
       fixedOverflowWidgets: true,
       links: true,
-      colorDecorators: false,
+      // Unity colors only (color-preview.js): not Monaco's guesses at hex strings; the picker opens on a click
+      colorDecorators: true,
+      defaultColorDecorators: 'never',
+      colorDecoratorsActivatedOn: 'click',
       lightbulb: { enabled: 'onCode' },
       hover: { delay: 400, sticky: true },
       definitionLinkOpensInPeek: false,

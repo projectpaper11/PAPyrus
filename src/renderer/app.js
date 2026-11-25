@@ -29,6 +29,7 @@ import { FileErrors } from './file-errors.js';
 import { Refactorings } from './refactorings.js';
 import { UsingCleanup } from './using-cleanup.js';
 import { PasteUsings } from './paste-usings.js';
+import { registerColorPreview } from './color-preview.js';
 import { UnityFeatures } from './unity-features.js';
 import { LocalHistory } from './local-history.js';
 import { NamespaceCheck } from './namespace-check.js';
@@ -84,6 +85,7 @@ class App {
       lspCovers: (model) => model.getLanguageId() === 'csharp' && this.lspState === 'ready',
     });
     registerOverrideCompletion(this);
+    registerColorPreview();
     registerUnityMessageCompletion(this);
     this.refactor = new Refactorings(this);
     this.pasteUsings = new PasteUsings(this);
