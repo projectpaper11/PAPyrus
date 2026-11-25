@@ -18,6 +18,7 @@ export class LspClient {
     this.pullResults = new Map(); // uri -> Map(identifier -> {resultId, items})
     this.lastDiagnostics = new Map(); // uri -> lsp diagnostics (all identifiers merged)
     this.diagVersion = new Map(); // uri -> document version the diagnostics are for
+    this.semanticDoneFor = new Map(); // uri -> version whose colors were re-asked after its diagnostics
     this.onDiagnostics = null; // (model, diagnostics) once they're shown (using cleanup)
     this.providers = [];
     this.lensKickedFor = null; // model whose lenses were last re-requested after being shown
@@ -330,6 +331,13 @@ export class LspClient {
     monaco.editor.setModelMarkers(cur.model, 'lsp', all.filter(cv.visibleDiagnostic).map(cv.toMarker));
     if (this.onDiagnostics) this.onDiagnostics(cur.model, all);
     this.onDocsChange && this.onDocsChange();
+    // The colors asked right after an edit can be Roslyn's half-ready answer (project still loading or
+    // reloading, names not bound yet: white). With this version's diagnostics in, Roslyn has analyzed
+    // it, so the colors are asked once more for it.
+    if (!incomplete && this.semanticDoneFor.get(uri) !== version) {
+      this.semanticDoneFor.set(uri, version);
+      this.refreshSemantic();
+    }
   }
 
   // ------------------------------------------------------------------ workspace diagnostics
@@ -424,6 +432,16 @@ export class LspClient {
 
   refreshSemantic() {
     if (this.semanticEmitter) this.semanticEmitter.fire();
+  }
+
+  /** No colors came back (server busy / failed): ask again a few times, a little later each time. */
+  retrySemanticSoon() {
+    if (this.semanticRetryTimer || (this.semanticRetries || 0) >= 5) return;
+    this.semanticRetries = (this.semanticRetries || 0) + 1;
+    this.semanticRetryTimer = setTimeout(() => {
+      this.semanticRetryTimer = null;
+      this.refreshSemantic();
+    }, 400 * this.semanticRetries);
   }
 
   registerProviders() {
@@ -691,11 +709,20 @@ export class LspClient {
         }));
       }
       if (caps.semanticTokensProvider.range) {
+        // Roslyn only answers ranges (full: false). Monaco re-asks a range provider only when the view
+        // scrolls or the text changes, or when the provider fires onDidChange: without it Roslyn's
+        // refresh (project loaded, .csproj reloaded after Unity regenerated it) never reached the
+        // editor, and names stayed white until the user touched the file.
         add(L.registerDocumentRangeSemanticTokensProvider(sel, {
+          onDidChange: this.semanticEmitter.event,
           getLegend: () => monacoLegend,
           async provideDocumentRangeSemanticTokens(model, range, token) {
-            const r = await self.request('textDocument/semanticTokens/range', { textDocument: doc(model), range: cv.toLspRange(range) }, token);
-            if (!r || !r.data) return null;
+            // ContentModified (Roslyn still on the previous text): ask again instead of leaving the
+            // edited lines without colors
+            const r = await self.requestRetry('textDocument/semanticTokens/range', { textDocument: doc(model), range: cv.toLspRange(range) }, token);
+            if (token && token.isCancellationRequested) return null;
+            if (!r || !r.data) { self.retrySemanticSoon(); return null; }
+            self.semanticRetries = 0;
             return { data: new Uint32Array(r.data), resultId: r.resultId };
           },
         }));
