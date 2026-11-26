@@ -107,6 +107,11 @@ export class LspClient {
         break;
       case 'workspace/diagnostic/refresh':
       case 'workspace/projectInitializationComplete':
+        // What Roslyn reported so far no longer holds (project loaded or reloaded) though the text
+        // is the same version: not "fresh" until the new pull is in. Loading, a file sits in
+        // Miscellaneous Files, where every using is "unnecessary" with no errors to hold the using
+        // cleanup back; those old results counted as fresh and a save removed the file's usings.
+        for (const uri of this.diagVersion.keys()) this.diagVersion.set(uri, -1);
         this.pullAll();
         if (method === 'workspace/projectInitializationComplete') this.refreshSemantic();
         break;
@@ -239,6 +244,18 @@ export class LspClient {
   refreshAfterExternalEdit() {
     this.refreshSemantic();
     this.pullAll();
+  }
+
+  /**
+   * The project Roslyn has the file in: { misc, label }, or null when it can't tell (another server,
+   * no answer). misc: "Miscellaneous Files" / "기타 파일" — the project isn't loaded (yet), so the file
+   * is compiled alone and Roslyn's analysis of it (unused usings, missing errors) means nothing.
+   */
+  async projectContext(model) {
+    const r = await this.request('textDocument/_vs_getProjectContexts', { _vs_textDocument: { uri: model.uri.toString() } });
+    const list = r && r._vs_projectContexts;
+    if (!Array.isArray(list) || !list.length) return null;
+    return { misc: list.every((c) => c._vs_is_miscellaneous), label: list.map((c) => c._vs_label).join(', ') };
   }
 
   /** Diagnostics for the model's current text (not an older version still on the way)? */

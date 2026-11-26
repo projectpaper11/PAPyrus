@@ -179,6 +179,7 @@ class LspServer {
     this.stopped = false;
     this.kind = null;
     this.restoring = false;
+    this.projectReady = false; // Roslyn sent projectInitializationComplete
   }
 
   status(state, detail) {
@@ -338,6 +339,7 @@ class LspServer {
       return null;
     });
     conn.onNotification('workspace/projectInitializationComplete', () => {
+      this.projectReady = true;
       this.status('ready');
       this.onNotification('workspace/projectInitializationComplete', {});
     });
@@ -373,7 +375,10 @@ class LspServer {
       await LspServer.restore(this.root, this.onLog);
     }
     this.restoring = false;
-    this.status('ready');
+    // a restore asked while the projects load ends before they're loaded: still loading then (ready
+    // too early let features act on files Roslyn had in Miscellaneous Files, e.g. remove usings)
+    if (this.projectReady || this.kind === 'omnisharp') this.status('ready');
+    else this.status('loading', '프로젝트 불러오는 중');
   }
 
   request(method, params, token) {

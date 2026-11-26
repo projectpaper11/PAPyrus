@@ -228,6 +228,12 @@ export class UsingCleanup {
   async analyze(model, { badNamespaces = false } = {}) {
     if (!this.app.lsp.diagnosticsFresh(model)) return null;
     const version = model.getVersionId();
+    // Roslyn must have the file in its real project: in Miscellaneous Files (project loading or
+    // reloading) every using looks unnecessary and nothing is an error
+    if (this.app.lsp.kind === 'roslyn') {
+      const ctx = await this.app.lsp.projectContext(model).catch(() => null);
+      if (!ctx || ctx.misc) return { lines: [], kept: 'noProject', block: new Set(usingBlock(model)) };
+    }
     const excludedCode = await this.excludedCode(model);
     if (model.isDisposed() || model.getVersionId() !== version || !this.app.lsp.diagnosticsFresh(model)) return null;
     return analyzeUsings(model, this.app.lsp.diagnosticsFor(model), { excludedCode, badNamespaces });
@@ -258,6 +264,9 @@ export class UsingCleanup {
       const caretLines = new Set(this.app.editors.groups.filter((g) => g.editor.getModel() === model).map((g) => g.editor.getPosition()?.lineNumber));
       lines = lines.filter((l) => base.has(model.getLineContent(l).trim()) && !caretLines.has(l));
       if (lines.length >= a.block.size) return 0; // every using unused: an emptied file, not a cleanup
+    } else if (lines.length && this.wipesAll(model, a)) {
+      this.log(`${this.fileName(model)}: using이 전부 안 쓰는 것으로 나와서 저장할 때 지우지 않았어요.`);
+      lines = [];
     }
     this.pendingSave.delete(model);
     if (!lines.length) return 0;
@@ -277,7 +286,18 @@ export class UsingCleanup {
     if (this.untouchedSinceReload(model) || this.recentlyCut(model)) return;
     const a = await this.analyze(model);
     if (!a) { this.pendingSave.add(model); return; }
+    // every using of a file with code "unused" at once is Roslyn not seeing the code, not a cleanup
+    // (the "using 정리" command still can)
+    if (a.lines.length && this.wipesAll(model, a)) {
+      this.log(`${this.fileName(model)}: using이 전부 안 쓰는 것으로 나와서 저장할 때 지우지 않았어요.`);
+      return;
+    }
     if (a.lines.length) this.remove(model, a.lines, { why: 'save' });
+  }
+
+  /** Would these lines take every using of a file that has code (a type declared)? */
+  wipesAll(model, a) {
+    return a.block.size > 1 && a.lines.length >= a.block.size && /\b(class|struct|interface|enum|record)\s+\w/.test(model.getValue());
   }
 
   afterSave(model) {

@@ -453,6 +453,46 @@ class App {
     return list.some((e) => !e.dir && /\.slnx?$/.test(e.name));
   }
 
+  /** The projects the solution lists (lower-case, sorted), or null without a solution. */
+  async solutionProjects() {
+    const list = await O.fs.listDir(this.project, { all: true }).catch(() => []);
+    const sln = list.find((e) => !e.dir && /\.slnx?$/i.test(e.name));
+    if (!sln) return null;
+    const text = ((await O.fs.readFile(joinPath(this.project, sln.name)).catch(() => null)) || {}).text || '';
+    const re = /\.slnx$/i.test(sln.name) ? /<Project\s+Path="([^"]+)"/g : /^Project\("[^"]*"\)\s*=\s*"[^"]*",\s*"([^"]+)"/gm;
+    const out = [];
+    for (let m; (m = re.exec(text));) out.push(m[1].replace(/\//g, '\\').toLowerCase());
+    return out.sort().join('|');
+  }
+
+  /**
+   * Unity rewrote the solution / project files. Roslyn watches the .csproj files it loaded and
+   * reloads one by itself in a moment (a script added, moved or deleted), keeping everything else:
+   * colors and errors stay. Restarting the server for that, as before, reloaded the whole solution
+   * (half a minute in a big project) and every file was white with no errors meanwhile. The server
+   * restarts only when it has to: no solution when it started, a project added to / removed from the
+   * solution (a new asmdef), or another server than Roslyn.
+   */
+  async onProjectFilesChanged(paths) {
+    const slnChanged = paths.some((p) => /\.slnx?$/i.test(p));
+    if (!this.slnAtStart || this.lsp.kind !== 'roslyn') {
+      this.slnAtStart = true;
+      this.restartLspSoon();
+      return;
+    }
+    if (slnChanged) {
+      const now = await this.solutionProjects();
+      if (now !== this.lspSolutionProjects) {
+        this.lspSolutionProjects = now;
+        this.restartLspSoon();
+        return;
+      }
+    }
+    // Roslyn reloads the project itself: ask again for colors and errors once it has
+    clearTimeout(this.projectReloadTimer);
+    this.projectReloadTimer = setTimeout(() => this.lsp.refreshAfterExternalEdit(), 4000);
+  }
+
   async indexFiles() {
     this.fileIndex = await O.fs.listAllFiles(this.project);
     if (this.namespaceCheck) this.namespaceCheck.recheckAll(); // asmdefs (rootNamespace) are known now
@@ -679,6 +719,8 @@ class App {
 
   // ======================================================================== LSP
   async startLsp() {
+    // what this server loads: a later change to the solution's project list needs a restart
+    this.lspSolutionProjects = await this.solutionProjects().catch(() => null);
     const res = await this.lsp.start();
     if (res && res.missing && this.settings['setup.dontShow']) {
       toast({
@@ -1301,7 +1343,9 @@ class App {
       else if (typeof r === 'object') {
         const why = r.kept === 'errors'
           ? '코드에 오류(빨간 줄)가 있어서 안 쓰는 것처럼 보이는 using을 그대로 뒀어요. 어떤 using이 필요한지 알 수 없어요. 오류를 먼저 고친 뒤에 다시 해 보세요.'
-          : '#if로 꺼진 코드(회색)가 있어서 안 쓰는 것처럼 보이는 using을 그대로 뒀어요. 꺼진 코드에서 쓰는 using일 수 있어요.';
+          : r.kept === 'noProject'
+            ? 'C# 언어 서버가 아직 프로젝트를 불러오는 중이라 using을 그대로 뒀어요. 잠시 뒤에 다시 해 보세요.'
+            : '#if로 꺼진 코드(회색)가 있어서 안 쓰는 것처럼 보이는 using을 그대로 뒀어요. 꺼진 코드에서 쓰는 using일 수 있어요.';
         toast({ kind: 'warn', title: 'using 정리', message: (r.removed ? `using ${r.removed}개를 지웠어요. ` : '') + why, timeout: 5000 });
       } else toast({ title: 'using 정리', message: r ? `using ${r}개를 지웠어요.` : '지울 using이 없어요.', timeout: 2000 });
     }, cat);
@@ -1554,11 +1598,8 @@ class App {
       this.fileIndex.push(...added);
       // Unity (re)generated the solution or project files: a package was added (DOTween, UniTask...),
       // the package settings in Preferences changed, an asmdef moved... -> reload them in the language server
-      const projectFiles = paths.some((p) => samePath(dirname(p), this.project) && /^\.(sln|slnx|csproj)$/i.test(extname(p)));
-      if (projectFiles) {
-        this.slnAtStart = true;
-        this.restartLspSoon();
-      }
+      const projectFiles = paths.filter((p) => samePath(dirname(p), this.project) && /^\.(sln|slnx|csproj)$/i.test(extname(p)));
+      if (projectFiles.length) this.onProjectFilesChanged(projectFiles);
       if (paths.some((p) => /[\\/]Packages[\\/](manifest|packages-lock)\.json$/i.test(p))) this.packagesChanged = true;
     });
     window.addEventListener('beforeunload', () => this.saveSession());

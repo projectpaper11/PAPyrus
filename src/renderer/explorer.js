@@ -1392,8 +1392,9 @@ export class Explorer {
       return;
     }
     const lsp = this.app.lsp;
-    if (!lsp.running || !lsp.caps || !lsp.caps.renameProvider) {
-      toast({ kind: 'warn', title: '클래스 이름은 그대로 뒀어요', message: 'C# 언어 서버가 준비된 뒤에 다시 시도하세요.' });
+    // loading, Roslyn would rename only inside this file and leave every usage broken
+    if (!lsp.running || !lsp.caps || !lsp.caps.renameProvider || this.app.lspState !== 'ready') {
+      toast({ kind: 'warn', title: '클래스 이름은 그대로 뒀어요', message: 'C# 언어 서버가 프로젝트를 다 불러온 뒤에 다시 시도하세요 (파일 이름만 바뀌었어요).' });
       return;
     }
     const tab = this.app.editors.findTab(path);
@@ -1609,6 +1610,9 @@ export class Explorer {
     const esc = cls.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const decl = new RegExp(`\\b(?:class|struct|interface|enum|record)\\s+(${esc})\\b`).exec(text);
     if (!decl) return []; // no type named after the file: nothing to break
+    // while the projects load Roslyn finds no usages at all: "unknown", not "none" (the delete
+    // dialog then says it couldn't check instead of deleting a script that is used)
+    if (this.app.lspState !== 'ready') throw new Error('C# 언어 서버가 프로젝트를 불러오는 중이에요');
     const offset = decl.index + decl[0].length - cls.length;
     const before = text.slice(0, offset).split(/\r?\n/);
     const position = { line: before.length - 1, character: before[before.length - 1].length };

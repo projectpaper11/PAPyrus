@@ -399,6 +399,12 @@ export class Refactorings {
       toast({ kind: 'warn', title: '리팩터링', message: 'C# 언어 서버가 준비된 뒤에 다시 시도하세요.', timeout: 3000 });
       return null;
     }
+    // projects still loading: Roslyn sees each file alone and finds no usages, so a rename, a move or
+    // a signature change would only touch this file
+    if (this.app.lspState !== 'ready') {
+      toast({ kind: 'warn', title: '리팩터링', message: 'C# 언어 서버가 프로젝트를 불러오는 중이에요. 상태 표시줄의 C#이 준비되면 다시 시도하세요.', timeout: 3500 });
+      return null;
+    }
     return { ed, model, path: tab.path, uri: model.uri.toString() };
   }
 
