@@ -609,6 +609,16 @@ export class LspClient {
           const actions = (r || []).filter((a) => !(a.command && /fixAllCodeAction/.test(a.command.command || a.command)))
             .map((a) => {
               if (typeof a.command === 'string') return { title: a.title, command: { id: 'papyrus.lsp.command', title: a.title, arguments: [a] } };
+              // Roslyn's Extract Method / Extract Local Function applied as they are name the new
+              // method NewMethod: run PAPyrus's own (asks the name, renames it) on this range instead
+              if (/extract method|메서드 추출|extract local function|로컬 함수 추출/i.test(a.title)) {
+                const local = /local function|로컬 함수/i.test(a.title);
+                return {
+                  title: local ? '로컬 함수로 추출… (이 메서드 안에)' : '메서드 추출…',
+                  kind: a.kind,
+                  command: { id: 'papyrus.extractMethod', title: a.title, arguments: [{ range, local }] },
+                };
+              }
               const act = { title: a.title, kind: a.kind, isPreferred: a.isPreferred, diagnostics: (a.diagnostics || []).map(cv.toMarker), __lsp: a };
               if (a.disabled) act.disabled = a.disabled.reason;
               if (a.edit) act.edit = self.toMonacoEdit(a.edit);

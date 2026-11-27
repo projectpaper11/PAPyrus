@@ -1284,6 +1284,8 @@ class App {
 
   setupCommands() {
     monaco.editor.registerCommand('papyrus.lsp.command', (_acc, cmd, uri) => this.runLspCommand(cmd, uri));
+    // the lightbulb / Ctrl+. "메서드 추출" (lsp-client.js): the name is asked and applied
+    monaco.editor.registerCommand('papyrus.extractMethod', (_acc, opts) => this.refactor.extractMethod(opts || {}));
     const K = this.keys;
     const G = (id, label, keys, run, extra = {}) => K.register({ id, label, keys, run, scope: 'global', ...extra });
     const E = (id, label, keys, run, extra = {}) => K.register({ id, label, keys, run, scope: 'editor', ...extra });

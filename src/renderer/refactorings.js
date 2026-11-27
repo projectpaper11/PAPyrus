@@ -490,6 +490,7 @@ export class Refactorings {
     const items = [
       { label: '이름 바꾸기…', icon: 'edit', key: kb('editor.action.rename'), action: () => this.app.editorAction('editor.action.rename') },
       { label: '메서드 추출…', icon: 'symbol-method', key: kb('papyrus.extractMethod'), disabled: sel.isEmpty(), action: () => this.extractMethod() },
+      { label: '로컬 함수로 추출… (이 메서드 안에)', icon: 'symbol-function', disabled: sel.isEmpty(), action: () => this.extractMethod({ local: true }) },
       { label: '시그니처 변경…', icon: 'symbol-parameter', key: kb('papyrus.changeSignature'), action: () => this.changeSignature() },
       { label: '타입 이동…', icon: 'file-symlink-file', key: kb('papyrus.moveType'), action: () => this.moveType() },
       { label: '안전 삭제…', icon: 'trash', key: kb('papyrus.safeDelete'), action: () => this.safeDelete() },
@@ -500,7 +501,7 @@ export class Refactorings {
     let more = [];
     try {
       const acts = await Promise.race([this.codeActions(c.model, sel, ['refactor']), delay(1500).then(() => [])]);
-      more = acts.filter((a) => !/extract method|메서드 추출|move type to|형식.*이동/i.test(a.title)).slice(0, 14);
+      more = acts.filter((a) => !/extract method|메서드 추출|extract local function|로컬 함수 추출|move type to|형식.*이동/i.test(a.title)).slice(0, 14);
     } catch { /* menu without them */ }
     if (more.length) {
       items.push('-');
@@ -511,36 +512,68 @@ export class Refactorings {
 
   // -------------------------------------------------------------------- Extract Method
 
-  async extractMethod() {
+  /**
+   * Extract Method (local: Extract Local Function), also from the lightbulb / Ctrl+. where Roslyn's
+   * own actions used to be applied as they are: always named NewMethod, and the local function one
+   * put it inside the method. range: the code to extract (default: the selection).
+   */
+  async extractMethod({ range, local = false } = {}) {
     const c = this.ctx();
     if (!c) return;
-    const sel = c.ed.getSelection();
+    const what = local ? '로컬 함수 추출' : '메서드 추출';
+    const sel = range ? monaco.Range.lift(range) : c.ed.getSelection();
     if (!sel || sel.isEmpty()) {
-      toast({ kind: 'warn', title: '메서드 추출', message: '메서드로 뺄 코드를 먼저 선택하세요.', timeout: 3000 });
+      toast({ kind: 'warn', title: what, message: '메서드로 뺄 코드를 먼저 선택하세요.', timeout: 3000 });
       return;
     }
-    const isExtract = (a) => /extract method|메서드 추출/i.test(a.title) && !/local function|로컬 함수/i.test(a.title);
-    let act = (await this.codeActions(c.model, sel, ['refactor.extract'])).find(isExtract);
-    if (!act) act = (await this.codeActions(c.model, sel, null)).find(isExtract);
-    if (!act) {
-      toast({ kind: 'warn', title: '메서드 추출', message: '이 선택 영역은 메서드로 뺄 수 없어요. 완전한 문장(들)이나 식을 선택하세요.' });
+    const isExtract = (a) => (local
+      ? /local function|로컬 함수/i.test(a.title)
+      : /extract method|메서드 추출/i.test(a.title) && !/local function|로컬 함수/i.test(a.title));
+    const find = async (r) => (await this.codeActions(c.model, r, ['refactor.extract'])).find(isExtract)
+      || (await this.codeActions(c.model, r, null)).find(isExtract);
+    if (!(await find(sel))) {
+      toast({ kind: 'warn', title: what, message: '이 선택 영역은 메서드로 뺄 수 없어요. 완전한 문장(들)이나 식을 선택하세요.' });
       return;
     }
-    const name = await prompt({ title: '메서드 추출', sub: '새 메서드 이름', value: 'NewMethod' });
-    if (name == null) return;
+    // While the name is asked the text can still change (the using cleanup removing a line moves
+    // everything up): the selection is followed with a decoration, and Roslyn is asked again for
+    // the code as it is then. The action asked before the dialog extracted the old line numbers'
+    // code from the new text and put the method in odd places.
+    const [deco] = c.model.deltaDecorations([], [{ range: sel, options: { stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges } }]);
+    const name = await prompt({ title: what, sub: local ? '새 로컬 함수 이름' : '새 메서드 이름', value: 'NewMethod' });
+    const target = c.model.isDisposed() ? null : c.model.getDecorationRange(deco);
+    if (!c.model.isDisposed()) c.model.deltaDecorations([deco], []);
+    if (name == null || !target) return;
     const newName = name.trim();
-    if (!IDENT.test(newName)) { toast({ kind: 'warn', title: '메서드 추출', message: `'${newName}'은(는) 메서드 이름으로 쓸 수 없어요.` }); return; }
+    if (!IDENT.test(newName)) { toast({ kind: 'warn', title: what, message: `'${newName}'은(는) 메서드 이름으로 쓸 수 없어요.` }); return; }
     try {
       const original = c.model.getValue();
-      const done = await this.runCodeAction(act);
-      // Roslyn names it NewMethod(1, 2...): find it in the edit, then rename it to what was asked
+      let done = null;
+      for (let i = 0; i < 3 && !done; i++) {
+        const version = c.model.getVersionId();
+        const act = await find(target);
+        if (!act) throw new Error('이 선택 영역은 메서드로 뺄 수 없어요');
+        const r = act.edit || act.command ? act : (await this.lsp.request('codeAction/resolve', act)) || act;
+        if (c.model.getVersionId() !== version) continue; // changed meanwhile: ask again
+        if (r.edit) await this.app.editors.applyWorkspaceEdit(r.edit);
+        if (r.command) await this.app.runLspCommand(r.command, c.uri);
+        done = r;
+      }
+      if (!done) throw new Error('코드가 계속 바뀌고 있어요. 잠시 뒤에 다시 해 보세요');
+      // Roslyn names it NewMethod(1, 2...): find it in the edit (or, when it came through a command,
+      // in the text: a NewMethod name the file didn't have), then rename it to what was asked
       const texts = JSON.stringify(done.edit || {});
-      const gen = (/\b(NewMethod\d*)\b/.exec(texts) || [])[1];
+      let gen = (/\b(NewMethod\d*)\b/.exec(texts) || [])[1];
+      if (!gen) {
+        await delay(200);
+        const had = new Set(original.match(/\bNewMethod\d*\b/g) || []);
+        gen = (c.model.getValue().match(/\bNewMethod\d*\b/g) || []).find((n) => !had.has(n));
+      }
       if (gen && gen !== newName) await this.renameExtracted(c, original, gen, newName);
       this.revealExtracted(c, newName);
-      toast({ title: '메서드 추출', message: `'${newName}' 메서드를 만들었어요.`, timeout: 2500 });
+      toast({ title: what, message: `'${newName}' ${local ? '로컬 함수' : '메서드'}를 만들었어요.`, timeout: 2500 });
     } catch (err) {
-      this.fail('메서드 추출 실패', err);
+      this.fail(`${what} 실패`, err);
     }
   }
 
